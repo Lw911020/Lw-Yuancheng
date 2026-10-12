@@ -3,6 +3,20 @@
 > 一台 Windows 电脑，同时管理 **U30 Air 随身 WiFi**、**C3 (comma three / openpilot)**、**BYD DiLink 车机** —— 经 EasyTier 异网组网，无需同一局域网。
 
 ![版本](https://img.shields.io/badge/version-0.8.10-blue) ![平台](https://img.shields.io/badge/platform-Windows%20x64-lightgrey) ![许可](https://img.shields.io/badge/license-MIT-green)
+![CI](https://github.com/Lw911020/Lw-Yuancheng/actions/workflows/ci.yml/badge.svg)
+
+---
+
+## 获取
+
+```bash
+git clone git@github.com:Lw911020/Lw-Yuancheng.git
+cd Lw-Yuancheng
+npm install && npm start          # 开发模式
+node recon/pack.mjs app           # 打包（产物在 app/）
+```
+
+想**直接用**（不装 Node）：到 [Releases](https://github.com/Lw911020/Lw-Yuancheng/releases) 下载 Windows 压缩包，解压双击即可。
 
 ---
 

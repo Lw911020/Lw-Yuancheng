@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 打包前的那道语法闸：任何 js 语法不过就失败
+      - name: 语法检查（renderer + electron）
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem renderer, electron -Recurse -Filter *.js | ForEach-Object {
+            node --check $_.FullName 2>$null
+            if ($LASTEXITCODE -ne 0) { Write-Error "语法错误: $($_.Name)"; $bad++ }
+          }
+          if ($bad -gt 0) { exit 1 }
+          Write-Host "全部通过"
+
+      # 确认没把私钥/产物提交进来
+      - name: 敏感文件检查
+        shell: pwsh
+        run: |
+          $tracked = git ls-files
+          $bad = $tracked | Select-String -Pattern 'c3-keys/|_ed25519|\.pem$|node_modules/|^app/'
+          if ($bad) { Write-Error "不该入库的文件被跟踪了：$bad"; exit 1 }
+          Write-Host "敏感文件检查通过"
