@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'" />
+<title>远程控制台</title>
+<link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">
+      <img class="logo" src="../assets/icon.png" onerror="this.style.display='none'" alt="" />
+      <div>
+        <div class="title">远程控制台 <span id="ver" class="ver"></span></div>
+        <div class="subtitle">U30 Air · C3 · 车机</div>
+      </div>
+    </div>
+    <div id="status" class="status"></div>
+    <div id="busy" class="busy"></div>
+    <div class="topactions">
+      <button id="btn-overview" class="btn">总览</button>
+      <button id="btn-tunnel" class="btn">隧道</button>
+      <div class="spacer"></div>
+      <button id="btn-theme" class="btn" title="切换主题">主题</button>
+      <button id="btn-settings" class="btn">设置</button>
+    </div>
+  </header>
+
+  <div id="body">
+    <aside id="sidebar">
+      <div class="side-head">设备</div>
+      <div id="device-list"></div>
+      <div class="side-head">工具</div>
+      <div id="tool-list"></div>
+      <div class="side-foot">
+        <div class="hint">红线模式：<span id="guard-mode">-</span></div>
+      </div>
+    </aside>
+
+    <main>
+      <div id="tabbar">
+        <div id="tabs"></div>
+        <div id="tabbar-spacer"></div>
+      </div>
+      <div id="content"></div>
+    </main>
+  </div>
+
+  <div id="modal-root"></div>
+
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="fx.js"></script>
+  <script src="panels.js"></script>
+  <script src="files.js"></script>
+  <script src="easytier.js"></script>
+  <script src="c3cast.js"></script>
+  <script src="carcast.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

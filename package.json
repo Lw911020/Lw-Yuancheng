@@ -1,0 +1,23 @@
+{
+  "name": "remote-console",
+  "productName": "远程控制台",
+  "version": "0.8.10",
+  "description": "三端远程调试控制台 - U30 Air / C3 / 车机",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "author": "local",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.7.0"
+  }
+}

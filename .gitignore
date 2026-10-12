@@ -1,0 +1,33 @@
+# 依赖与产物
+node_modules/
+app/
+发布*/
+dist*/
+*.zip
+*.7z
+*.exe
+!recon/*.exe
+
+# 开发/逆向（含第三方 APK 与解密资源，不入库）
+recon/
+!recon/pack.mjs
+!recon/rebuild.ps1
+PLAN.md
+RECON.md
+
+# 敏感：私钥绝不入库
+c3-keys/
+*.pem
+*_ed25519
+id_rsa*
+*.ppk
+.env
+.env.*
+
+# 日志与临时
+*.log
+*.out
+*.bin
+npm-debug.log*
+.DS_Store
+Thumbs.db
