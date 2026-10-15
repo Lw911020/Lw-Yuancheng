@@ -6,6 +6,11 @@
 - 实测（同一链路 ~120 KB/s）：**1024×512 @ 15fps / ~65 KB/s**（原 MJPEG 为 480×240 @ 9fps）；脚本内容内联下发，设备重启后自愈
 - 投屏面板新增「模式」选择：**H.264 低延迟（默认）** / MJPEG 兼容（原路径完整保留）
 
+**C3 面板：新增「模拟点火」开关（bench）**
+- 设备端 `/data/openpilot/.dsh/bench_control.py` 认两个标志（`/data/openpilot/.dsh/bench_ignition`、`/data/bench_spoof_ignition`），任一存在 => pandad 以 `STARTED=1` 启动 => `pandaStates.ignitionLine=1` => `deviceState.started=1` => Qt UI 进行车页
+- C3 面板工具条加按钮：显示当前状态并一键切换（`🔥 模拟点火：已开／已关`），改完标志后 pandad 会自动重启，约 5~10 秒生效；面板卡片同时显示「标志 ON/OFF + pandad STARTED=0/1」以确认是否真的生效
+- 实测：开 → `STARTED=1`；关 → pandad 重启后 `STARTED=0`；再开 → 恢复 `STARTED=1`
+
 **C3 投屏：触摸矫正改成可操作的三种互换**
 - 原来的 90°/270°/0°/180° 与真实落点对不上；现改为 **正常 / 上下互换 / 左右互换 / 对角互换**（默认上下互换）
 
