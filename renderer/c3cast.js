@@ -15,12 +15,20 @@
   window.PANELS.c3cast = function (pane) {
     const APP = window.APP;
     const st = { running: false, frames: 0, fps: 10, wid: 640, q: 65, last: 0, dragging: false, touchReady: false, src: 'ui', stream: 'road',
-      rot: (APP.state.cfg && APP.state.cfg.castRot) || '270' };   // 实机校准结果：270°
-    const ROT = {
-      '90':  function (u, v) { return [u, v]; },
-      '270': function (u, v) { return [1 - u, 1 - v]; },
-      '0':   function (u, v) { return [v, 1 - u]; },
-      '180': function (u, v) { return [1 - v, u]; }
+      mode: (APP.state.cfg && APP.state.cfg.castMode) || 'h264', bitrate: '800k', gop: 20,
+      touch: (APP.state.cfg && APP.state.cfg.castTouch) || 'v' };   // 触屏调整：normal / v(上下) / h(左右) / diag(对角)
+    // 默认参数：H.264 走全分辨率/20fps；MJPEG 走 480px（老链路带宽小）
+    if (st.mode === 'h264') { st.wid = 1024; st.fps = 20; } else { st.wid = 480; st.fps = 10; st.q = 50; }
+    // 发给 rc_touch.py 的 (u', v')；脚本内部换算成面板坐标 fx = v'、fy = 1 - u'。
+    // 面板是竖屏(1080x2160)、屏幕是横屏(2160x1080)，所以真实落点 (fx,fy) 必然属于"对角互换"那一族：
+    //   normal → (fx,fy) = (v, u)      上下互换 → (1-v, u)
+    //   左右互换 → (v, 1-u)            对角互换 → (1-v, 1-u)
+    // 2026-10-14 实机反馈：默认取「上下互换」。
+    const TOUCH = {
+      normal: function (u, v) { return [1 - u, v]; },
+      v:      function (u, v) { return [1 - u, 1 - v]; },   // 上下互换
+      h:      function (u, v) { return [u, v]; },           // 左右互换
+      diag:   function (u, v) { return [u, 1 - v]; }        // 对角互换
     };
 
     const box = E('div', 'panel');
@@ -65,6 +73,7 @@
       s.value = String(def);
       s.onchange = function () { st[key] = Number(s.value); if (st.running) { stop(); setTimeout(start, 300); } };
       w.appendChild(s);
+      w.sel = s;
       return w;
     };
     // 来源：截 UI 画面 / 摄像头原画
@@ -84,22 +93,43 @@
     };
     sw.appendChild(ssel);
     bar2.appendChild(sw);
-    bar2.appendChild(mkSel('帧率', [5, 8, 10, 15], 'fps', 10));
-    bar2.appendChild(mkSel('宽度', [480, 640, 800, 1024], 'wid', 640));
-    const qsel = mkSel('画质', [50, 65, 70, 80], 'q', 65);
+    // 模式：H.264（低延迟，WebCodecs 解码）/ MJPEG（兼容老链路）
+    const mw = E('label', 'badge');
+    mw.style.cssText = 'padding:3px 8px;display:flex;gap:5px;align-items:center';
+    mw.appendChild(document.createTextNode('模式'));
+    const msel = E('select', 'txt');
+    msel.style.padding = '1px 5px';
+    [['h264', 'H.264 低延迟'], ['mjpeg', 'MJPEG 兼容']].forEach(function (o) { const op = E('option', null, o[1]); op.value = o[0]; msel.appendChild(op); });
+    msel.value = st.mode;
+    msel.onchange = function () {
+      st.mode = msel.value;
+      rc.cfgSet({ castMode: st.mode });
+      if (st.mode === 'h264') { st.wid = 1024; st.fps = 20; } else { st.wid = 480; st.fps = 10; st.q = 50; }
+      if (widSel && widSel.sel) widSel.sel.value = String(st.wid);
+      if (fpsSel && fpsSel.sel) fpsSel.sel.value = String(st.fps);
+      if (qsel && qsel.sel) qsel.sel.value = String(st.q);
+      APP.toast(st.mode === 'h264' ? '已切到 H.264（1024px / 20fps）' : '已切到 MJPEG（480px / 10fps）');
+      if (st.running) { stop(); setTimeout(start, 400); }
+    };
+    mw.appendChild(msel);
+    bar2.appendChild(mw);
+    const fpsSel = mkSel('帧率', [8, 10, 15, 20, 25, 30], 'fps', st.fps);
+    bar2.appendChild(fpsSel);
+    const widSel = mkSel('宽度', [480, 640, 800, 1024], 'wid', st.wid);
+    bar2.appendChild(widSel);
+    const qsel = mkSel('画质', [50, 65, 70, 80], 'q', st.q);
     bar2.appendChild(qsel);
     const rw = E('label', 'badge');
     rw.style.cssText = 'padding:3px 8px;display:flex;gap:5px;align-items:center';
-    rw.appendChild(document.createTextNode('触点方向'));
+    rw.appendChild(document.createTextNode('触屏调整'));
     const rsel = E('select', 'txt');
     rsel.style.padding = '1px 5px';
-    ['90', '270', '0', '180'].forEach(function (r) { const o = E('option', null, r + '°'); o.value = r; rsel.appendChild(o); });
-    rsel.value = st.rot;
+    [['normal', '正常'], ['v', '上下互换'], ['h', '左右互换'], ['diag', '对角互换']].forEach(function (o) { const op = E('option', null, o[1]); op.value = o[0]; rsel.appendChild(op); });
+    rsel.value = st.touch;
     rsel.onchange = function () {
-      st.rot = rsel.value;
-      rc.cfgSet({ castRot: st.rot });
-      if (APP.state.cfg) APP.state.cfg.castRot = st.rot;
-      APP.toast('触点方向已切到 ' + st.rot + '°（已记住）');
+      st.touch = rsel.value;
+      rc.cfgSet({ castTouch: st.touch });
+      APP.toast('触屏调整：' + rsel.options[rsel.selectedIndex].text + '（点一下画面试试）');
     };
     rw.appendChild(rsel);
     bar2.appendChild(rw);
@@ -112,6 +142,11 @@
     img.style.cssText = 'display:block;width:100%;height:auto;user-select:none';
     img.draggable = false;
     wrap.appendChild(img);
+    // H.264 模式用 canvas 显示（WebCodecs 解出来的 VideoFrame 直接画上去）
+    const canvas = E('canvas');
+    canvas.style.cssText = 'display:none;width:100%;height:auto;background:#000';
+    wrap.appendChild(canvas);
+    function activeEl() { return st.mode === 'h264' ? canvas : img; }
     const dot = E('div');
     dot.style.cssText = 'position:absolute;width:16px;height:16px;border-radius:50%;background:rgba(18,184,134,.85);transform:translate(-50%,-50%);opacity:0;pointer-events:none;border:2px solid #fff';
     wrap.appendChild(dot);
@@ -145,17 +180,28 @@
     async function start() {
       APP.setBusy('正在建立投屏…');
       try {
-        await rc.castStart({ fps: st.fps, wid: st.wid, q: st.q, source: st.src, stream: st.stream });
+        if (st.mode === 'h264') {
+          resetH264();
+          await ensureDec();
+          await rc.castStartH264({ fps: st.fps, wid: st.wid, bitrate: st.bitrate, gop: st.gop });
+          img.style.display = 'none'; canvas.style.display = 'block';
+          log('投屏已开始 H.264 ' + st.wid + 'px @' + st.fps + 'fps ' + st.bitrate + '\n');
+        } else {
+          await rc.castStart({ fps: st.fps, wid: st.wid, q: st.q, source: st.src, stream: st.stream });
+          canvas.style.display = 'none'; img.style.display = 'block';
+          log('投屏已开始 ' + (st.src === 'cam' ? '摄像头原画' : '车机画面') + ' ' + st.wid + 'px @' + st.fps + 'fps\n');
+        }
         st.running = true;
         st.frames = 0;
+        h264Frames = 0;
         syncButtons();
-        log('投屏已开始 ' + (st.src === 'cam' ? '摄像头原画' : '车机画面') + ' ' + st.wid + 'px @' + st.fps + 'fps\n');
       } catch (e) { APP.toast(APP.describeErr(e), 'fail'); log('启动失败：' + APP.describeErr(e) + '\n'); }
       finally { APP.clearBusy(); refresh(); }
     }
     async function stop() {
-      await rc.castStop();
+      try { if (st.mode === 'h264') await rc.castStopH264(); else await rc.castStop(); } catch (e) { /* 忽略 */ }
       st.running = false;
+      resetH264();
       log('投屏已停止\n');
       refresh();
     }
@@ -169,6 +215,85 @@
     });
     rc.onCastLog(function (p) { if (p && p.text) log(p.text); });
     rc.onCastExit(function () { st.running = false; log('[投屏流已结束]\n'); refresh(); });
+    rc.onCastH264(function (buf) { feedH264(buf); });
+
+    /* ---------- H.264 播放器：Annex-B → WebCodecs → canvas ---------- */
+    let dec = null, pendH264 = new Uint8Array(0), tsH264 = 0, h264Frames = 0, decCodec = 'avc1.42c01f';
+    window.__h264 = { chunks: 0, aus: 0, decoded: 0, err: null, bytes: 0 };
+    const H264_CODECS = ['avc1.42c01f', 'avc1.42E01E', 'avc1.4D401F', 'avc1.640028'];
+    async function ensureDec() {
+      if (dec) return dec;
+      if (typeof VideoDecoder === 'undefined') throw new Error('这个 Electron 没有 WebCodecs');
+      let codec = null;
+      for (let i = 0; i < H264_CODECS.length; i++) {
+        try { const s = await VideoDecoder.isConfigSupported({ codec: H264_CODECS[i], optimizeForLatency: true }); if (s.supported) { codec = H264_CODECS[i]; break; } } catch (e) {}
+      }
+      if (!codec) throw new Error('没有可用的 H.264 解码器');
+      dec = new VideoDecoder({
+        output: function (f) {
+          try {
+            if (canvas.width !== f.displayWidth || canvas.height !== f.displayHeight) { canvas.width = f.displayWidth; canvas.height = f.displayHeight; }
+            canvas.getContext('2d').drawImage(f, 0, 0);
+            h264Frames++;
+            if (window.__h264) window.__h264.decoded++;
+            const now = Date.now();
+            if (now - st.last > 500) { st.last = now; bFrame.textContent = '投屏中 · 帧 ' + h264Frames; bFrame.className = 'badge ok'; }
+          } catch (e) {} finally { try { f.close(); } catch (e) {} }
+        },
+        error: function (e) { log('解码错误：' + (e && e.message) + '\n'); }
+      });
+      decCodec = codec;
+      dec.configure({ codec: codec, optimizeForLatency: true });
+      log('H.264 解码器已就绪：' + codec + '\n');
+      return dec;
+    }
+    function resetH264() {
+      try { if (dec && dec.state !== 'closed') dec.close(); } catch (e) {}
+      dec = null; pendH264 = new Uint8Array(0); tsH264 = 0;
+    }
+    function decodeAU(m, s, e) {
+      let isKey = false;
+      for (let j = s; j + 3 < e; j++) {
+        if (m[j] === 0 && m[j + 1] === 0 && m[j + 2] === 1) {
+          const t = m[j + 3] & 0x1f;
+          if (t === 5 || t === 7) { isKey = true; break; }
+        }
+      }
+      try {
+        dec.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: tsH264, data: m.slice(s, e) }));
+        tsH264 += Math.round(1000000 / (st.fps || 20));
+        if (window.__h264) { window.__h264.aus++; window.__h264.bytes += (e - s); }
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (window.__h264) window.__h264.err = 'decode: ' + msg;
+        // 丢包后第一帧不是关键帧：reset 一下等下一个关键帧，避免整条流废掉
+        if (msg.indexOf('key frame') >= 0) {
+          try { dec.reset(); dec.configure({ codec: decCodec, optimizeForLatency: true }); if (window.__h264) window.__h264.resets = (window.__h264.resets || 0) + 1; } catch (e) {}
+        } else { log('送帧失败：' + msg + '\n'); }
+      }
+    }
+    function feedH264(buf) {
+      if (!dec || dec.state !== 'configured') { if (window.__h264) window.__h264.err = 'dec not ready: ' + (dec ? dec.state : 'null'); return; }
+      if (window.__h264) window.__h264.chunks++;
+      let chunk = null;
+      if (buf instanceof Uint8Array) chunk = buf;
+      else if (buf && buf.byteLength != null) chunk = new Uint8Array(buf);
+      else if (buf && buf.data) { const b = atob(buf.data); chunk = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) chunk[i] = b.charCodeAt(i); }
+      if (!chunk) return;
+      const m = new Uint8Array(pendH264.length + chunk.length);
+      m.set(pendH264, 0); m.set(chunk, pendH264.length);
+      const starts = [];
+      for (let i = 0; i + 4 < m.length; i++) {
+        if (m[i] !== 0 || m[i + 1] !== 0) continue;
+        let h;
+        if (m[i + 2] === 0 && m[i + 3] === 1) h = i + 4;                       // 4 字节起始码
+        else if (m[i + 2] === 1) { if (i > 0 && m[i - 1] === 0) continue; h = i + 3; }   // 3 字节（且不是 4 字节码的后半段）
+        else continue;
+        if ((m[h] & 0x1f) === 9) starts.push(i);
+      }
+      for (let k = 0; k + 1 < starts.length; k++) decodeAU(m, starts[k], starts[k + 1]);
+      pendH264 = starts.length ? m.slice(starts[starts.length - 1]) : m.slice(Math.max(0, m.length - 4));
+    }
 
     // 画面区 = 触摸板
     async function ensureTouch() {
@@ -177,12 +302,12 @@
       catch (e) { APP.toast('触摸通道打开失败：' + APP.describeErr(e), 'fail'); return false; }
     }
     function uv(ev) {
-      const r = img.getBoundingClientRect();
+      const r = activeEl().getBoundingClientRect();
       let u = (ev.clientX - r.left) / r.width;
       let v = (ev.clientY - r.top) / r.height;
       u = Math.min(1, Math.max(0, u));
       v = Math.min(1, Math.max(0, v));
-      return ROT[st.rot](u, v);
+      return (TOUCH[st.touch] || TOUCH.v)(u, v);
     }
     function showDot(ev) {
       const r = wrap.getBoundingClientRect();
@@ -192,14 +317,14 @@
     }
     async function send(cmd) { await ensureTouch(); rc.touchSend(cmd); }
 
-    img.addEventListener('mousedown', async function (ev) {
+    wrap.addEventListener('mousedown', async function (ev) {
       ev.preventDefault();
       st.dragging = true;
       showDot(ev);
       const p = uv(ev);
       await send('down ' + p[0].toFixed(4) + ' ' + p[1].toFixed(4));
     });
-    img.addEventListener('mousemove', function (ev) {
+    wrap.addEventListener('mousemove', function (ev) {
       if (!st.dragging) return;
       showDot(ev);
       const p = uv(ev);

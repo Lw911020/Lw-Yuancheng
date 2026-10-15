@@ -1,3 +1,20 @@
+## v0.8.11 — 2026-10-15
+
+**C3 投屏：新增 H.264 低延迟模式（默认）**
+- 设备端新增 `vendor/c3/rc_h264.py`：读 `/dev/shm/ui.rgb`(1024×512) → cv2 转 yuv420p(2.6ms) → ffmpeg/libx264（ultrafast + zerolatency + AUD 分隔）输出 Annex-B，复用原有 SSH 通道
+- 渲染层用 **WebCodecs(VideoDecoder) + canvas** 解码显示。没用 MSE：本程序页面是 `file://`，Chromium 会以 "Media load rejected by URL safety check" 拒绝 blob URL
+- 实测（同一链路 ~120 KB/s）：**1024×512 @ 15fps / ~65 KB/s**（原 MJPEG 为 480×240 @ 9fps）；脚本内容内联下发，设备重启后自愈
+- 投屏面板新增「模式」选择：**H.264 低延迟（默认）** / MJPEG 兼容（原路径完整保留）
+
+**C3 投屏：触摸矫正改成可操作的三种互换**
+- 原来的 90°/270°/0°/180° 与真实落点对不上；现改为 **正常 / 上下互换 / 左右互换 / 对角互换**（默认上下互换）
+
+**修复**
+- **停止投屏后设备端取流脚本不被杀**：每开一次就在 C3 上留一个吃 40% CPU 的孤儿进程，越用越卡 → 停止时杀进程 + 撤 `/dev/shm/ui.cast.on`，开流前再兜一次
+- **「安装钩子」装完不生效**：`process_config.py` 是 manager 启动时读进内存的，只 `pkill ui` 没用 → 改成 `sudo systemctl restart comma`
+- **终端 Ctrl+V 粘贴会发两遍**：自定义快捷键只 `return false`、没 `preventDefault`，xterm 自带 textarea paste 监听会再发一次（曾导致 `...update_openpilot.shwget: No such file or directory`）→ 现在 `preventDefault`，并改走 xterm 的 `paste()`（带 bracketed paste）
+- **终端右键菜单贴底被截断**：菜单插入后按视口夹取，下面放不下就往上翻，另加 `max-height` 兜底
+
 # 更新日志
 
 只记录重要内容。

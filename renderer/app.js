@@ -93,11 +93,20 @@ function applyTheme(name, persist) {
   if (persist) rcApi.cfgSet({ theme: name });
 }
 
+// 把右键菜单夹在窗口里：下面放不下就往上翻，右边放不下就往左挪
+function placeMenu(m, x, y) {
+  const r = m.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let left = x, top = y;
+  if (left + r.width > vw - 6) left = Math.max(6, vw - r.width - 6);
+  if (top + r.height > vh - 6) top = Math.max(6, y - r.height);
+  m.style.left = left + 'px';
+  m.style.top = top + 'px';
+}
+
 function showThemeMenu(x, y) {
   document.querySelectorAll('.term-menu').forEach(function (n) { n.remove(); });
   const m = el('div', 'term-menu');
-  m.style.left = (x || 120) + 'px';
-  m.style.top = (y || 56) + 'px';
   THEME_LIST.forEach(function (th) {
     const d = el('div', 'term-menu-item');
     const sw = el('span');
@@ -108,6 +117,7 @@ function showThemeMenu(x, y) {
     m.appendChild(d);
   });
   document.body.appendChild(m);
+  placeMenu(m, x || 120, y || 56);
   const close = function (ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('mousedown', close); } };
   setTimeout(function () { document.addEventListener('mousedown', close); }, 0);
 }
@@ -261,7 +271,9 @@ async function pasteToTab(tab) {
   try {
     const text = await navigator.clipboard.readText();
     if (text && tab.sendInput) {
-      tab.sendInput(text.replace(/\r?\n/g, tab.mode === 'pty' ? '\n' : '\r'));
+      // 优先走 xterm 的 paste()：自带换行转换与 bracketed paste，且只发一遍
+      if (tab.term && typeof tab.term.paste === 'function') tab.term.paste(text);
+      else tab.sendInput(text.replace(/\r?\n/g, tab.mode === 'pty' ? '\n' : '\r'));
       if (tab.term) tab.term.focus();
     }
   } catch (e) {
@@ -273,8 +285,6 @@ function showTermMenu(x, y, tab, term) {
   document.querySelectorAll('.term-menu').forEach(function (n) { n.remove(); });
   const m = document.createElement('div');
   m.className = 'term-menu';
-  m.style.left = x + 'px';
-  m.style.top = y + 'px';
   const item = function (label, fn) {
     const d = document.createElement('div');
     d.className = 'term-menu-item';
@@ -298,6 +308,7 @@ function showTermMenu(x, y, tab, term) {
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
   });
   document.body.appendChild(m);
+  placeMenu(m, x, y);
   const close = function (ev) {
     if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('mousedown', close); }
   };
@@ -314,12 +325,15 @@ function setupClipboard(tab, term, host) {
   term.attachCustomKeyEventHandler(function (e) {
     if (e.type !== 'keydown') return true;
     const ctrl = e.ctrlKey || e.metaKey;
+    // 粘贴键必须 preventDefault，否则 xterm 自己的 textarea paste 监听会再发一遍，
+    // 同一条命令被发两次（曾导致 xxx.shwget: No such file or directory）
+    const noPaste = function () { e.preventDefault(); return false; };
     if (ctrl && e.shiftKey && e.code === 'KeyC') { copySelection(term); return false; }
-    if (ctrl && e.shiftKey && e.code === 'KeyV') { pasteToTab(tab); return false; }
+    if (ctrl && e.shiftKey && e.code === 'KeyV') { pasteToTab(tab); return noPaste(); }
     if (ctrl && !e.shiftKey && e.code === 'KeyC' && term.hasSelection()) { copySelection(term); return false; }
-    if (ctrl && !e.shiftKey && e.code === 'KeyV') { pasteToTab(tab); return false; }
+    if (ctrl && !e.shiftKey && e.code === 'KeyV') { pasteToTab(tab); return noPaste(); }
     if (ctrl && e.code === 'Insert') { copySelection(term); return false; }
-    if (e.shiftKey && e.code === 'Insert') { pasteToTab(tab); return false; }
+    if (e.shiftKey && e.code === 'Insert') { pasteToTab(tab); return noPaste(); }
     return true;
   });
 }

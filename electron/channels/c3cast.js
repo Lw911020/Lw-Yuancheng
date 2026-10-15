@@ -106,10 +106,16 @@ async function provision(target) {
     steps.push('已改 process_config.py（备份在 .dsh-bak）');
   }
 
-  // 让管理器重启 ui
-  await sh(target, 'pkill -f "selfdrive/ui" ; pkill -x ui', 15000);
-  steps.push('已请求重启 ui（管理器会在几秒内拉起并加载钩子）');
-  return { ok: true, message: '安装完成，等 10 秒左右 ui 会自动重启并加载钩子', steps: steps, needWait: true };
+  // process_config.py 是 manager 启动时 import 进内存的：只 pkill ui 没用，
+  // 拉起来还是旧配置。必须重启整个 openpilot，让 manager 重新读配置。
+  const rr = await sh(target, 'sudo -n systemctl restart comma 2>&1; echo "RC=$?"', 120000);
+  if (rr.out.indexOf('RC=0') >= 0) {
+    steps.push('已重启 openpilot（约 30 秒，ui 会带钩子重新拉起）');
+  } else {
+    await sh(target, 'pkill -f "selfdrive/ui" ; pkill -x ui', 15000);
+    steps.push('服务重启失败，已改为只重启 ui：' + rr.out.slice(-160));
+  }
+  return { ok: true, message: '安装完成：openpilot 正在重启，约 30 秒后 ui 会带钩子拉起', steps: steps, needWait: true };
 }
 
 async function enable(target) {
@@ -122,11 +128,18 @@ async function disable(target) {
 }
 
 let stream = null;
+let lastTarget = null;
+
+// 清掉设备上残留的取流脚本：pkill 的 [r] 写法可避免匹配到自己的命令行
+function killRemote(target) {
+  return sh(target, 'pkill -f "[r]c_cast.py" ; pkill -f "[r]c_cam.py" ; pkill -f "[r]c_h264.py" ; echo KILLED', 15000).catch(function () { return null; });
+}
 
 // 打开视频流：把 rc_cast.py 推上去，用带 cv2 的 python 跑，解析 <len><jpeg>
 function start(target, opts, handlers) {
   return new Promise((resolve, reject) => {
-    stop();
+    if (stream) { try { require('../log').info('cast', '关流'); } catch (x) {} try { stream.close(); } catch (x) {} stream = null; }
+    lastTarget = target;
     const cam = !!(opts && opts.source === 'cam');       // ui = 截 UI 画面；cam = 摄像头原画（VisionIPC）
     const pyName = cam ? 'rc_cam.py' : 'rc_cast.py';
     const remote = cam ? '/tmp/rc_cam.py' : REMOTE_CAST;
@@ -139,7 +152,7 @@ function start(target, opts, handlers) {
 
     ssh.withSftp(target, (sftp) => new Promise((res, rej) => {
       sftp.writeFile(remote, py, (e) => e ? rej(e) : res(true));
-    })).then(() => {
+    })).then(() => killRemote(target)).then(() => {
       const { Client } = require('ssh2');
       const conn = new Client();
       conn.on('ready', () => {
@@ -182,7 +195,81 @@ function stop() {
     try { require('../log').info('cast', '关流'); } catch (e) {}
     try { stream.close(); } catch (e) {} stream = null;
   }
-  return { ok: true };
+  const t = lastTarget;
+  if (!t) return { ok: true };
+  // 关流时必须把设备上那个取流脚本也杀掉，并撤掉 /dev/shm/ui.cast.on。
+  // 否则每开一次投屏就在 C3 上留一个吃 40% CPU 的孤儿进程，越用越卡。
+  return sh(t, 'pkill -f "[r]c_cast.py" ; pkill -f "[r]c_cam.py" ; rm -f ' + FLAG + ' ; echo OK', 15000)
+    .then(function () { return { ok: true }; })
+    .catch(function () { return { ok: true }; });
 }
 
-module.exports = { status, provision, enable, disable, start, stop, vendorDir };
+// ---------- H.264 模式：设备端跑 rc_h264.py 输出 Annex-B，渲染层用 WebCodecs 解码 ----------
+let h264 = null;
+
+function startH264(target, opts, handlers) {
+  return new Promise((resolve, reject) => {
+    // 只关本地这条流；设备端的残留由 rc_h264.py 启动时自己清（排除自身），
+    // 这样开流只需「推脚本(可选) + 一次 exec」，少一次 SSH 往返（实测省 ~2s）
+    const cleanup = Promise.resolve(closeH264Local());
+    const T0 = Date.now();
+    lastTarget = target;
+    const py = vendorFile('rc_h264.py');
+    if (!py) { reject(new Error('缺少 vendor/c3/rc_h264.py')); return; }
+    const remote = '/tmp/rc_h264.py';
+    const fps = String((opts && opts.fps) || 20);
+    const wid = String((opts && opts.wid) || 1024);
+    const br = String((opts && opts.bitrate) || '800k');
+    const gop = String((opts && opts.gop) || 20);
+    // 脚本内容直接内联进命令：设备一重启 /tmp 就被清空（tmpfs），内联写法每次都能自愈，
+    // 而且省掉一次 SFTP 握手。脚本自己会开 /dev/shm/ui.cast.on、自己清残留进程。
+    const b64 = py.toString('base64');
+    const prep = Promise.resolve(cleanup);
+    prep.then(() => {
+      try { require('../log').info('cast', 'H.264 准备完成 ' + (Date.now() - T0) + 'ms' + ('（脚本内联下发）')); } catch (x) {}
+      const { Client } = require('ssh2');
+      const conn = new Client();
+      conn.on('ready', () => {
+        const pypath = (opts && opts.python) || '/usr/local/venv/bin/python3';
+        const cmd = 'echo ' + b64 + ' | base64 -d > ' + remote + ' && chmod 700 ' + remote +
+                    ' && exec ' + pypath + ' -u ' + remote + ' ' + fps + ' ' + wid + ' ' + br + ' ' + gop;
+        conn.exec(cmd, (err, st) => {
+          if (err) { conn.end(); reject(err); return; }
+          st.on('error', (e) => { try { handlers.onLog('[H.264 流错误] ' + (e && e.message) + '\n'); } catch (x) {} });
+          try { require('../log').info('cast', 'H.264 起流 ' + (Date.now() - T0) + 'ms'); } catch (x) {}
+          let firstData = true;
+          st.on('data', (d) => {
+            if (firstData) { firstData = false; try { require('../log').info('cast', 'H.264 首块数据 ' + (Date.now() - T0) + 'ms'); } catch (x) {} }
+            try { handlers.onChunk(d); } catch (x) {}
+          });
+          st.stderr.on('data', (d) => { try { handlers.onLog(d.toString('utf8')); } catch (x) {} });
+          st.on('close', () => { h264 = null; conn.end(); try { handlers.onExit(); } catch (x) {} });
+          try { require('../log').info('cast', 'H.264 开流 ' + fps + 'fps/' + wid + 'px/' + br + ' gop' + gop); } catch (x) {}
+          h264 = { close: () => { try { st.close(); } catch (e) {} try { conn.end(); } catch (e) {} } };
+          resolve({ ok: true, command: cmd });
+        });
+      });
+      conn.on('error', (e) => { h264 = null; reject(e); });
+      try { conn.connect(ssh.connOptions(target)); } catch (e) { reject(e); }
+    }).catch(reject);
+  });
+}
+
+function closeH264Local() {
+  if (h264) {
+    try { require('../log').info('cast', 'H.264 关流'); } catch (e) {}
+    try { h264.close(); } catch (e) {}
+    h264 = null;
+  }
+}
+
+function stopH264() {
+  closeH264Local();
+  const t = lastTarget;
+  if (!t) return { ok: true };
+  return sh(t, 'pkill -f "[r]c_h264.py" ; pkill -f "[r]c_cast.py" ; rm -f ' + FLAG + ' ; echo OK', 15000)
+    .then(function () { return { ok: true }; })
+    .catch(function () { return { ok: true }; });
+}
+
+module.exports = { status, provision, enable, disable, start, stop, startH264, stopH264, vendorDir };

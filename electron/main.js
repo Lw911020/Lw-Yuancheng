@@ -605,6 +605,15 @@ function ipc() {
   ipcMain.handle('cast:enable', () => c3cast.enable(c3t()));
   ipcMain.handle('cast:disable', () => c3cast.disable(c3t()));
   ipcMain.handle('cast:stop', () => c3cast.stop());
+  ipcMain.handle('cast:startH264', async (e, opts) => {
+    // 不再先 status()+enable()：设备端脚本自己会开开关，省掉两次 SSH 往返（每次都要完整握手）
+    return await c3cast.startH264(c3t(), opts || {}, {
+      onChunk: (buf) => send('cast:h264', buf),
+      onLog: (text) => send('cast:log', { text: text }),
+      onExit: () => send('cast:exit', {})
+    });
+  });
+  ipcMain.handle('cast:stopH264', () => c3cast.stopH264());
   ipcMain.handle('cast:start', async (e, opts) => {
     const st = await c3cast.status(c3t());
     if (!st.hookSo || !st.inMaps) throw new Error('C3 上还没装投屏钩子（点「安装钩子」）');
