@@ -15,6 +15,7 @@ const c3touch = require('./channels/c3touch');
 const c3cast = require('./channels/c3cast');
 const c3params = require('./channels/c3params');
 const LOG = require('./log');
+const dataBundle = require('./dataBundle');
 const carcast = require('./channels/carcast');
 const ssh = require('./channels/ssh');
 const ufi = require('./channels/ufi');
@@ -687,6 +688,65 @@ function ipc() {
 
   ipcMain.handle('sys:openExternal', (e, { url }) => shell.openExternal(url));
   ipcMain.handle('sys:paths', () => ({ userData: app.getPath('userData'), scriptsDir: cfg().scriptsDir, backupsDir: cfg().backupsDir }));
+  // ---------- 档 A：全部数据 导出 / 导入（换机器一键搬）----------
+  let pendingImport = null;
+
+  ipcMain.handle('data:exportAll', async () => {
+    const bundle = dataBundle.build(app.getPath('userData'), { app: app.getVersion() });
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes());
+    const r = await dialog.showSaveDialog(win, {
+      title: '导出全部数据',
+      defaultPath: '远程控制台数据-' + stamp + '.json',
+      filters: [{ name: '远程控制台数据包', extensions: ['json'] }]
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(r.filePath, JSON.stringify(bundle, null, 2), 'utf8');
+    let bytes = 0;
+    try { bytes = fs.statSync(r.filePath).size; } catch (e) {}
+    LOG.info('main', '导出数据包：' + r.filePath + '（' + bytes + ' 字节）');
+    return { ok: true, path: r.filePath, bytes: bytes, counts: bundle.counts };
+  });
+
+  ipcMain.handle('data:pickImport', async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: '选择要导入的数据包',
+      filters: [{ name: '远程控制台数据包', extensions: ['json'] }],
+      properties: ['openFile']
+    });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+    const file = r.filePaths[0];
+    let text = '';
+    try { text = fs.readFileSync(file, 'utf8'); } catch (e) { return { ok: false, message: '读不到文件：' + e.message }; }
+    const pr = dataBundle.parse(text);
+    if (!pr.ok) return pr;
+    const checks = dataBundle.checkPaths(pr.bundle, defaultConfig(app));
+    const id = 'imp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    pendingImport = { id: id, bundle: pr.bundle, path: file, at: Date.now() };
+    return {
+      ok: true, id: id, path: file, at: pendingImport.at,
+      exportedAt: pr.bundle.exportedAt || '', app: pr.bundle.app || '', dataDir: pr.bundle.dataDir || '',
+      counts: pr.bundle.counts || {}, checks: checks
+    };
+  });
+
+  ipcMain.handle('data:applyImport', async (e, o) => {
+    o = o || {};
+    if (!pendingImport || (o.id && o.id !== pendingImport.id)) return { ok: false, message: '导入会话已过期，请重新选择文件' };
+    const bundle = pendingImport.bundle;
+    pendingImport = null;
+    let res = null;
+    try {
+      res = dataBundle.apply(app.getPath('userData'), bundle, { fixPaths: !!o.fixPaths, defaults: defaultConfig(app) });
+    } catch (err) {
+      return { ok: false, message: '写入失败：' + (err && err.message ? err.message : String(err)) };
+    }
+    LOG.info('main', '导入数据包完成 | 原数据备份：' + res.backupDir + ' | 自动修正 ' + (res.fixed || []).length + ' 处路径');
+    return { ok: true, backupDir: res.backupDir, backed: res.backed, fixed: res.fixed };
+  });
+
+  ipcMain.handle('app:relaunch', () => { app.relaunch(); app.exit(0); return { ok: true }; });
   ipcMain.handle('win:minimize', () => { win.minimize(); });
   ipcMain.handle('win:maximize', () => { win.isMaximized() ? win.unmaximize() : win.maximize(); });
   ipcMain.handle('win:close', () => { win.close(); });

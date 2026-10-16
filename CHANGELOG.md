@@ -6,6 +6,12 @@
 - 实测（同一链路 ~120 KB/s）：**1024×512 @ 15fps / ~65 KB/s**（原 MJPEG 为 480×240 @ 9fps）；脚本内容内联下发，设备重启后自愈
 - 投屏面板新增「模式」选择：**H.264 低延迟（默认）** / MJPEG 兼容（原路径完整保留）
 
+**档 A：数据搬运（导出 / 导入，换机器一键搬）**
+- 设置页新增「数据搬运」：**⬆ 导出全部数据…** 把 设置与设备连接、命令库、脚本正文、参数快照 打成一个 JSON 文件；**⬇ 导入数据…** 在另一台电脑还原
+- 导入前**自动把现有数据备份**到 `backups/pre-import-<时间>`（含本机全部 `.sh`，因为导入会替换脚本目录），并在确认框里列出「本机不存在的路径」（adb / scrcpy / EasyTier 内核与 CLI / SSH 密钥），有默认值的可勾选一键改成本机默认
+- 脚本目录与备份目录导入后强制指向本机数据目录，避免带上别人的绝对路径；导入完成提供「立即重启」按钮让新配置生效
+- 新增 `electron/dataBundle.js`（build / parse / checkPaths / apply），纯 Node 内置模块，不引入任何第三方依赖
+
 **C3 面板：新增「模拟点火」开关（bench）**
 - 设备端 `/data/openpilot/.dsh/bench_control.py` 认两个标志（`/data/openpilot/.dsh/bench_ignition`、`/data/bench_spoof_ignition`），任一存在 => pandad 以 `STARTED=1` 启动 => `pandaStates.ignitionLine=1` => `deviceState.started=1` => Qt UI 进行车页
 - C3 面板工具条加按钮：显示当前状态并一键切换（`🔥 模拟点火：已开／已关`），改完标志后 pandad 会自动重启，约 5~10 秒生效；面板卡片同时显示「标志 ON/OFF + pandad STARTED=0/1」以确认是否真的生效

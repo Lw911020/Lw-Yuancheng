@@ -1289,6 +1289,70 @@ box.appendChild(body);
       });
 
       const r2 = row();
+      // ---- 数据搬运（档 A：换机器一键搬）----
+      const ddata = el('div', 'field');
+      ddata.appendChild(el('label', null, '数据搬运（导出 / 导入）'));
+      const drow = row();
+      drow.appendChild(btn('⬆ 导出全部数据…', async function () {
+        try {
+          const r = await rc.dataExportAll();
+          if (!r || !r.ok) { if (r && r.message) A.toast('导出失败：' + r.message); return; }
+          const c = r.counts || {};
+          const d = el('div');
+          d.appendChild(el('div', null, '文件：' + r.path));
+          d.appendChild(el('div', null, '大小：' + (r.bytes > 1024 ? (r.bytes / 1024).toFixed(1) + ' KB' : r.bytes + ' 字节')));
+          d.appendChild(el('div', null, '内容：设备 ' + (c.targets || 0) + ' 个 · 命令 ' + (c.commands || 0) + ' 条 · 脚本 ' + (c.scripts || 0) + ' 个 · 参数快照 ' + (c.snapshots || 0) + ' 份'));
+          d.appendChild(el('div', 'desc', '把这个文件拷到另一台电脑，用「导入数据…」即可。'));
+          A.modal('导出完成', d, async function () {}, '好');
+        } catch (e) { A.toast('导出失败：' + A.describeErr(e)); }
+      }, 'primary'));
+      drow.appendChild(btn('⬇ 导入数据…', async function () {
+        try {
+          const p = await rc.dataPickImport();
+          if (!p || !p.ok) { if (p && p.message) A.toast('导入失败：' + p.message); return; }
+          let fixPaths = true;
+          const c = p.counts || {};
+          const d = el('div');
+          d.appendChild(el('div', null, '导出机器：' + (p.dataDir || '?') + (p.app ? '（本程序 v' + p.app + '）' : '')));
+          d.appendChild(el('div', null, '导出时间：' + (p.exportedAt ? String(p.exportedAt).replace('T', ' ').slice(0, 19) : '?')));
+          d.appendChild(el('div', null, '内容：设备 ' + (c.targets || 0) + ' 个 · 命令 ' + (c.commands || 0) + ' 条 · 脚本 ' + (c.scripts || 0) + ' 个 · 参数快照 ' + (c.snapshots || 0) + ' 份'));
+          const bad = (p.checks || []).filter(function (x) { return !x.exists; });
+          if (bad.length) {
+            d.appendChild(el('h2', null, '本机不存在的路径（' + bad.length + ' 处）'));
+            bad.forEach(function (x) {
+              d.appendChild(el('div', 'desc', '· ' + x.label + '：' + x.value + (x.fallback ? '　→　改成 ' + x.fallback : '　（需自己补）')));
+            });
+            const w = el('label', 'badge');
+            w.style.cssText = 'display:flex;gap:6px;align-items:center;padding:6px 10px;margin-top:8px';
+            const cb = el('input'); cb.type = 'checkbox'; cb.checked = true;
+            cb.onchange = function () { fixPaths = cb.checked; };
+            w.appendChild(cb);
+            w.appendChild(document.createTextNode('有默认值的路径自动改成本机默认'));
+            d.appendChild(w);
+          }
+          d.appendChild(el('div', 'desc', '导入会覆盖当前的设置、命令库、脚本与参数快照；原数据会先备份到数据目录下的 backups/pre-import-<时间>。导入后需要重启程序。'));
+          A.modal('确认导入', d, async function () {
+            const r = await rc.dataApplyImport({ id: p.id, fixPaths: fixPaths });
+            if (!r || !r.ok) { A.toast('导入失败：' + ((r && r.message) || '未知错误')); return; }
+            const d2 = el('div');
+            d2.appendChild(el('div', null, '已导入。原数据备份在：'));
+            d2.appendChild(el('div', 'desc', r.backupDir));
+            if ((r.fixed || []).length) {
+              d2.appendChild(el('h2', null, '已自动修正路径（' + r.fixed.length + ' 处）'));
+              (r.fixed || []).forEach(function (x) { d2.appendChild(el('div', 'desc', '· ' + x)); });
+            }
+            d2.appendChild(el('div', 'desc', '点下面按钮重启程序，让新配置生效。'));
+            A.modal('导入完成', d2, async function () { await rc.appRelaunch(); }, '立即重启');
+          }, '确认导入');
+        } catch (e) { A.toast('导入失败：' + A.describeErr(e)); }
+      }));
+      drow.appendChild(btn('▤ 打开数据目录', function () {
+        rc.paths().then(function (pp) { rc.openExternal('file:///' + String(pp.userData).replace(/\\/g, '/')); });
+      }));
+      ddata.appendChild(drow);
+      ddata.appendChild(el('div', 'desc', '包含：设置与设备连接、命令库、脚本正文、参数快照。不含日志与备份。导入前会自动把现有数据备份到 backups/pre-import-<时间>。'));
+      body.appendChild(ddata);
+
       r2.appendChild(btn('打开数据目录', function () { rc.paths().then(function (p) { rc.openExternal('file:///' + p.scriptsDir.replace(/\\\\/g, '/')); }); }));
       body.appendChild(r2);
     }
