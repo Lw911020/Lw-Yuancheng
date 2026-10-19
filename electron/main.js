@@ -354,7 +354,7 @@ async function execOnce(targetId, channel, cmd) {
 }
 
 // ---------- 脚本执行（.sh） ----------
-async function runScriptOn(targetId, channel, content) {
+async function runScriptOn(targetId, channel, content, name) {
   const c = cfg();
   const target = (c.targets || []).find((x) => x.id === targetId);
   if (!target) throw new Error('未知设备');
@@ -362,14 +362,24 @@ async function runScriptOn(targetId, channel, content) {
   if (g.action === 'blocked') throw new Error('【红线拦截】脚本命中「' + g.label + '」：' + g.reason);
 
   const b64 = Buffer.from(content, 'utf8').toString('base64');
-  const stamp = 'rc_' + Date.now().toString(36) + '.sh';
+  // 文件名带上脚本名，方便在设备上复查：/data/rc_scripts/名字_时间戳.sh
+  const safe = String(name || 'script').replace(/[^\w\u4e00-\u9fa5.\-]+/g, '_').slice(0, 40) || 'script';
+  const stamp = safe + '_' + Date.now().toString(36) + '.sh';
 
   if (channel === 'ssh') {
-    const remote = '/tmp/' + stamp;
-    const r1 = await ssh.exec(target, 'printf %s ' + JSON.stringify(b64) + ' | base64 -d > ' + remote + ' && chmod +x ' + remote, 40000);
+    // 放 /data 下（tmpfs 的 /tmp 重启就没了，且 /data 可持久复查）；
+    // 用 cd /data && sh 脚本 运行 —— 很多 openpilot 脚本依赖 cwd=/data 或相对路径
+    const dir = '/data/rc_scripts';
+    const remote = dir + '/' + stamp;
+    const r1 = await ssh.exec(target,
+      'mkdir -p ' + dir + ' && printf %s ' + JSON.stringify(b64) + ' | base64 -d > ' + remote + ' && chmod +x ' + remote, 40000);
     if (r1.code !== 0) throw new Error('上传脚本失败：' + (r1.stderr || r1.stdout));
-    const r2 = await ssh.exec(target, 'sh ' + remote, 300000);
-    return Object.assign(r2, { remote: remote });
+    const r2 = await ssh.exec(target, 'cd /data && sh ' + remote, 300000);
+    // 只留最近 20 个，别把 /data 塞满
+    try {
+      await ssh.exec(target, 'ls -t ' + dir + '/*.sh 2>/dev/null | tail -n +21 | xargs -r rm -f', 20000);
+    } catch (e) { /* 清理失败不影响脚本结果 */ }
+    return Object.assign(r2, { remote: remote, cwd: '/data' });
   }
   if (channel === 'root') {
     const cmd = 'printf %s ' + JSON.stringify(b64) + ' | base64 -d > /data/local/tmp/' + stamp + ' && chmod 755 /data/local/tmp/' + stamp + ' && sh /data/local/tmp/' + stamp;
@@ -457,7 +467,7 @@ function ipc() {
   ipcMain.handle('script:read', (e, { id }) => store.readScript(id));
   ipcMain.handle('script:save', (e, { meta, content }) => store.saveScript(meta, content));
   ipcMain.handle('script:delete', (e, { id }) => { store.deleteScript(id); return store.listScripts(); });
-  ipcMain.handle('script:run', async (e, { targetId, channel, content }) => runScriptOn(targetId, channel, content));
+  ipcMain.handle('script:run', async (e, { targetId, channel, content, name }) => runScriptOn(targetId, channel, content, name));
   ipcMain.handle('script:openDir', () => shell.openPath(store.scriptsDir()));
   ipcMain.handle('script:import', async () => {
     const r = await dialog.showOpenDialog(win, {

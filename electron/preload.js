@@ -33,7 +33,7 @@ contextBridge.exposeInMainWorld('rc', {
   scriptRead: (id) => ipcRenderer.invoke('script:read', { id: id }),
   scriptSave: (meta, content) => ipcRenderer.invoke('script:save', { meta: meta, content: content }),
   scriptDelete: (id) => ipcRenderer.invoke('script:delete', { id: id }),
-  scriptRun: (targetId, channel, content) => ipcRenderer.invoke('script:run', { targetId: targetId, channel: channel, content: content }),
+  scriptRun: (targetId, channel, content, name) => ipcRenderer.invoke('script:run', { targetId: targetId, channel: channel, content: content, name: name }),
   scriptOpenDir: () => ipcRenderer.invoke('script:openDir'),
   dataExportAll: () => ipcRenderer.invoke('data:exportAll'),
   dataPickImport: () => ipcRenderer.invoke('data:pickImport'),

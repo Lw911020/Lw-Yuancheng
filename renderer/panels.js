@@ -1045,7 +1045,8 @@ window.__initPanels = function () {
       if (tab && tab.term) tab.term.write('\x1b[36m$ 运行脚本 ' + rec.file + ' …\x1b[0m\r\n');
       A.setBusy('正在运行脚本 ' + rec.name + ' …');
       try {
-        const res = await rc.scriptRun(targetId, channel, full.content);
+        const res = await rc.scriptRun(targetId, channel, full.content, rec.name);
+        if (res && res.remote && tab && tab.term) tab.term.write('\x1b[90m[已放到 ' + res.remote + '，工作目录 ' + (res.cwd || '/data') + ']\x1b[0m\r\n');
         const text = (res.stdout || '') + (res.stderr || '');
         if (tab && tab.term) tab.term.write(text.replace(/\r?\n/g, '\r\n') + '\r\n\x1b[90m[脚本结束，退出码 ' + res.code + ']\x1b[0m\r\n');
       } catch (e) {
