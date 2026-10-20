@@ -21,6 +21,8 @@ typedef unsigned int GLenum; typedef int GLint; typedef int GLsizei;
 static EGLBoolean (*p_swap)(EGLDisplay, EGLSurface) = NULL;
 static void (*p_read)(GLint,GLint,GLsizei,GLsizei,GLenum,GLenum,void*) = NULL;
 static void (*p_getiv)(GLenum, GLint*) = NULL;
+static void (*p_bindfb)(GLenum, unsigned int) = NULL;
+static void (*p_readbuf)(GLenum) = NULL;
 static int OUTW = 1024;
 static double INTERVAL = 0.045;
 static const char *FLAG = "/dev/shm/ui.cast.on";
@@ -87,6 +89,28 @@ static void probe_once(const char *tag){
   if (fd >= 0){ char nl = 10; write(fd, tag, strlen(tag)); write(fd, &nl, 1); close(fd); }
 }
 
+/* 记录每个 EGLSurface 的交换次数：判断"弹窗"是不是独立窗口/表面 */
+static void probe_surface(const char *tag, void *surf){
+  static void *seen[8]; static unsigned long cnt[8]; static int n = 0; static unsigned long total = 0;
+  int i;
+  for (i = 0; i < n; i++) { if (seen[i] == surf) { cnt[i]++; break; } }
+  if (i == n && n < 8) { seen[n] = surf; cnt[n] = 1; n++;
+    int fd = open("/dev/shm/uihook.log", O_WRONLY|O_CREAT|O_APPEND, 0666);
+    if (fd >= 0){ char b[128]; char nl = 10; int len = snprintf(b, sizeof b, "NEW %s surface=%p (count %d)", tag, surf, n);
+      if (len > 0) { if (write(fd, b, len) < 0) {} } if (write(fd, &nl, 1) < 0) {} close(fd); }
+  }
+  total++;
+  if (total % 400 == 0) {
+    int fd = open("/dev/shm/uihook.log", O_WRONLY|O_CREAT|O_APPEND, 0666);
+    if (fd >= 0){ char b[256]; char nl = 10; int off = 0; int k;
+      off += snprintf(b+off, sizeof b-off, "SNAP %s surfaces=%d:", tag, n);
+      for (k = 0; k < n && off < (int)sizeof b - 32; k++) off += snprintf(b+off, sizeof b-off, " %p=%lu", seen[k], cnt[k]);
+      if (off > 0) { if (write(fd, b, off) < 0) {} }
+      if (write(fd, &nl, 1) < 0) {}
+      close(fd); }
+  }
+}
+
 static void capture(void){
   if (access(FLAG, F_OK) != 0) return;
   double t = now();
@@ -113,6 +137,29 @@ static void capture(void){
   if (ready < 0){ for (int i = 0; i < 2; i++){ if (!inUse[i]){ inUse[i] = 1; idx = i; break; } } }
   pthread_mutex_unlock(&mtx);
   if (idx < 0) return;
+  /* 关键：Qt 可能把自己的 FBO 留在绑定状态，那样 glReadPixels 读到的只是
+     内部渲染目标（没有弹窗层）。读到之前强制绑回窗口表面。 */
+  {
+    GLint fbo = -1;
+    if (!p_bindfb) p_bindfb = (void(*)(GLenum,unsigned int))dlsym(RTLD_NEXT, "glBindFramebuffer");
+    if (!p_readbuf) p_readbuf = (void(*)(GLenum))dlsym(RTLD_NEXT, "glReadBuffer");
+    if (!p_getiv) p_getiv = (void(*)(GLenum,GLint*))dlsym(RTLD_NEXT, "glGetIntegerv");
+    if (p_getiv) p_getiv(0x8CA6 /*GL_FRAMEBUFFER_BINDING*/, &fbo);
+    if (p_bindfb) p_bindfb(0x8D40 /*GL_FRAMEBUFFER*/, 0);
+    if (p_readbuf) p_readbuf(0x0405 /*GL_BACK*/);
+    /* 每 200 次记录一次当前 FBO，用来判断 Qt 有没有留非零 FBO */
+    {
+      static int probed = 0;
+      if (probed < 6) {
+        probed++;
+        int fd = open("/dev/shm/uihook.log", O_WRONLY|O_CREAT|O_APPEND, 0666);
+        if (fd >= 0){ char bb[128]; char nl = 10;
+          int len = snprintf(bb, sizeof bb, "CAP fbo_before=%d viewport=%dx%d", fbo, W, H);
+          if (len > 0) { if (write(fd, bb, len) < 0) {} }
+          if (write(fd, &nl, 1) < 0) {} close(fd); }
+      }
+    }
+  }
   p_read(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, fb[idx]);
   pthread_mutex_lock(&mtx);
   fw = W; fh = H; fseq = seq++; ready = idx;
@@ -123,6 +170,7 @@ static void capture(void){
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surf){
   if (!p_swap) p_swap = (EGLBoolean(*)(EGLDisplay,EGLSurface))dlsym(RTLD_NEXT, "eglSwapBuffers");
   probe_once("eglSwapBuffers");
+  probe_surface("eglSwapBuffers", (void*)surf);
   capture();
   if (!p_swap) return 1;
   return p_swap(dpy, surf);
@@ -132,6 +180,7 @@ EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay dpy, EGLSurface surf, GLint *r
   static EGLBoolean (*p)(EGLDisplay,EGLSurface,GLint*,GLint) = NULL;
   if (!p) p = (EGLBoolean(*)(EGLDisplay,EGLSurface,GLint*,GLint))dlsym(RTLD_NEXT, "eglSwapBuffersWithDamageKHR");
   probe_once("eglSwapBuffersWithDamageKHR");
+  probe_surface("eglSwapBuffersWithDamageKHR", (void*)surf);
   capture();
   if (!p) return eglSwapBuffers(dpy, surf);
   return p(dpy, surf, rects, n_rects);
@@ -141,6 +190,7 @@ EGLBoolean eglSwapBuffersWithDamageEXT(EGLDisplay dpy, EGLSurface surf, GLint *r
   static EGLBoolean (*p)(EGLDisplay,EGLSurface,GLint*,GLint) = NULL;
   if (!p) p = (EGLBoolean(*)(EGLDisplay,EGLSurface,GLint*,GLint))dlsym(RTLD_NEXT, "eglSwapBuffersWithDamageEXT");
   probe_once("eglSwapBuffersWithDamageEXT");
+  probe_surface("eglSwapBuffersWithDamageEXT", (void*)surf);
   capture();
   if (!p) return eglSwapBuffers(dpy, surf);
   return p(dpy, surf, rects, n_rects);

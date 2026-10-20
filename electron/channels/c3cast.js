@@ -2,7 +2,7 @@
 // C3 投屏通道
 // 原理（参考 C3Shell 的做法）：把 uihook.so 用 LD_PRELOAD 挂进 openpilot 的 ui 进程，
 // 它在 eglSwapBuffers 里调 glReadPixels 把画面（RGB24, 纵向已翻转）写到 /dev/shm/ui.rgb；
-// 开关是 /dev/shm/ui.cast.on。本模块负责：装钩子 / 开关 / 把帧流出来。
+// 开关是 /dev/shm/ui.cast.on。本模块负责：装插件 / 开关 / 把帧流出来。
 const fs = require('fs');
 const path = require('path');
 const ssh = require('./ssh');
@@ -58,14 +58,24 @@ async function status(target) {
   };
 }
 
-// 装钩子：编译 uihook.c + 改 process_config.py（自动备份 + 语法自检）
+// 装插件：编译 uihook.c + 改 process_config.py（自动备份 + 语法自检）
 async function provision(target) {
   const steps = [];
   const st = await status(target);
-  if (st.hookSo && st.inMaps) return { ok: true, message: '钩子已装好且已加载', steps: steps };
-
   const src = vendorFile('uihook.c');
   if (!src) return { ok: false, message: '本地缺少 vendor/c3/uihook.c', steps: steps };
+  // 先比对设备上的源码与本地是否一致（不一致 = 需要重装）
+  let devMd5 = '';
+  try {
+    const rr = await sh(target, 'md5sum ' + HOOK_C + ' 2>/dev/null', 15000);
+    devMd5 = ((rr.out || '').trim().split(/\s+/)[0]) || '';
+  } catch (e) { devMd5 = ''; }
+  const localMd5 = require('crypto').createHash('md5').update(src).digest('hex');
+  const sameSrc = !!devMd5 && devMd5 === localMd5;
+  if (st.hookSo && st.inMaps && sameSrc) {
+    return { ok: true, message: '插件已是最新且已加载（源码一致，无需重装）', steps: steps };
+  }
+
 
   await ssh.withSftp(target, (sftp) => new Promise((resolve, reject) => {
     const put = (p, buf) => new Promise((res, rej) => sftp.writeFile(p, buf, (e) => e ? rej(e) : res(true)));
@@ -110,12 +120,12 @@ async function provision(target) {
   // 拉起来还是旧配置。必须重启整个 openpilot，让 manager 重新读配置。
   const rr = await sh(target, 'sudo -n systemctl restart comma 2>&1; echo "RC=$?"', 120000);
   if (rr.out.indexOf('RC=0') >= 0) {
-    steps.push('已重启 openpilot（约 30 秒，ui 会带钩子重新拉起）');
+    steps.push('已重启 openpilot（约 30 秒，ui 会带插件重新拉起）');
   } else {
     await sh(target, 'pkill -f "selfdrive/ui" ; pkill -x ui', 15000);
     steps.push('服务重启失败，已改为只重启 ui：' + rr.out.slice(-160));
   }
-  return { ok: true, message: '安装完成：openpilot 正在重启，约 30 秒后 ui 会带钩子拉起', steps: steps, needWait: true };
+  return { ok: true, message: '安装完成：openpilot 正在重启，约 30 秒后 ui 会带插件拉起', steps: steps, needWait: true };
 }
 
 async function enable(target) {

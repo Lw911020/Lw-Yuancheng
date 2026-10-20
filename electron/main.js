@@ -616,7 +616,7 @@ function ipc() {
   ipcMain.handle('cast:stopH264', () => c3cast.stopH264());
   ipcMain.handle('cast:start', async (e, opts) => {
     const st = await c3cast.status(c3t());
-    if (!st.hookSo || !st.inMaps) throw new Error('C3 上还没装投屏钩子（点「安装钩子」）');
+    if (!st.hookSo || !st.inMaps) throw new Error('C3 上还没装投屏插件（点「安装插件」）');
     if (!st.flag) await c3cast.enable(c3t());
     await c3cast.start(c3t(), Object.assign({ python: st.python }, opts || {}), {
       onFrame: (jpg, n) => send('cast:frame', { data: jpg.toString('base64'), n: n }),

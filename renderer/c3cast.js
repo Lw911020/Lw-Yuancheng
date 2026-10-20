@@ -37,7 +37,7 @@
     box.appendChild(E('div', 'desc', '点画面可以直接操作 C3'));
 
     const bar = E('div', 'row-flex'); bar.style.margin = '10px 0';
-    const bHook = E('span', 'badge', '钩子 ?');
+    const bHook = E('span', 'badge', '插件 ?');
     const bFlag = E('span', 'badge', '开关 ?');
     const bFrame = E('span', 'badge', '帧 0');
     bar.appendChild(bHook); bar.appendChild(bFlag); bar.appendChild(bFrame);
@@ -53,14 +53,15 @@
       toggleBtn.className = 'btn ' + (st.running ? 'danger' : 'primary');
       toggleBtn.disabled = false;
     }
-    bar2.appendChild(btn('安装钩子', async function () {
-      APP.setBusy('正在安装投屏钩子（编译 + 改 openpilot 配置）…');
+    bar2.appendChild(btn('安装插件', async function () {
+      const pm = APP.progressModal('安装插件（编译 + 改 openpilot 配置）');
       try {
         const r = await rc.castProvision();
-        APP.toast(r.message, r.ok ? undefined : 'fail');
-        if (r.steps) r.steps.forEach(function (s) { APP.toast(s); });
-      } catch (e) { APP.toast(APP.describeErr(e), 'fail'); }
-      finally { APP.clearBusy(); await refresh(); }
+        (r.steps || []).forEach(function (s) { pm.step(s); });
+        if (r.ok) { pm.done(true, r.message); }
+        else { pm.done(false, r.message); APP.toast(r.message, 'fail'); }
+      } catch (e) { pm.done(false, APP.describeErr(e)); }
+      finally { await refresh(); }
     }));
     bar2.appendChild(btn('刷新状态', refresh));
     const mkSel = function (label, opts, key, def) {
@@ -166,7 +167,7 @@
     async function refresh() {
       try {
         const s = await rc.castStatus();
-        bHook.textContent = s.hookSo ? (s.inMaps ? '钩子 已加载' : '钩子 未加载') : '钩子 未安装';
+        bHook.textContent = s.hookSo ? (s.inMaps ? '插件 已加载' : '插件 未加载') : '插件 未安装';
         bHook.className = 'badge ' + (s.inMaps ? 'ok' : (s.hookSo ? 'warn' : 'fail'));
         bFlag.textContent = s.flag ? '开关 已开' : '开关 关';
         bFlag.className = 'badge ' + (s.flag ? 'ok' : '');

@@ -96,6 +96,19 @@ fd_ = -1
 last = -1
 n = 0
 t0 = time.time()
+def _cleanup(*_a):
+    try:
+        if ff is not None:
+            if ff.poll() is None: ff.kill()
+            ff.wait(timeout=3)
+    except Exception:
+        pass
+    sys.exit(0)
+import atexit, signal as _sig
+atexit.register(_cleanup)
+for _s in ('SIGTERM', 'SIGINT', 'SIGHUP'):
+    try: _sig.signal(getattr(_sig, _s), _cleanup)
+    except Exception: pass
 log('READY')
 
 while True:

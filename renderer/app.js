@@ -154,12 +154,55 @@ function renderTabs() {
   });
 }
 
+/* 进度弹窗：装插件这类多步骤操作只弹这一个，成功后自动关闭 */
+function progressModal(title) {
+  const mask = el('div', 'modal-mask');
+  const m = el('div', 'modal');
+  m.style.width = '520px';
+  m.appendChild(el('h3', null, title || '处理中'));
+  const bar = el('div', 'progbar'); const fill = el('i'); bar.appendChild(fill); m.appendChild(bar);
+  const list = el('div', 'out');
+  list.style.maxHeight = '230px'; list.style.marginTop = '10px'; list.style.fontSize = '12px';
+  m.appendChild(list);
+  const row = el('div', 'row-flex'); row.style.marginTop = '12px'; row.style.justifyContent = 'flex-end';
+  const btn = el('button', 'btn primary', '请稍候…');
+  btn.disabled = true;
+  btn.onclick = function () { mask.remove(); };
+  row.appendChild(btn); m.appendChild(row);
+  mask.appendChild(m); $('modal-root').appendChild(mask);
+  let n = 0;
+  return {
+    step: function (text, total) {
+      n++;
+      list.textContent += '[' + n + (total ? '/' + total : '') + '] ' + text + String.fromCharCode(10);
+      list.scrollTop = list.scrollHeight;
+      fill.style.width = total ? Math.round(n / total * 100) + '%' : Math.min(90, n * 15) + '%';
+    },
+    done: function (ok, msg) {
+      if (msg) list.textContent += String.fromCharCode(10) + (ok ? 'OK  ' : '失败 ') + msg + String.fromCharCode(10);
+      fill.style.width = '100%';
+      list.scrollTop = list.scrollHeight;
+      btn.disabled = false;
+      if (ok) {
+        btn.textContent = '完成（自动关闭）';
+        setTimeout(function () { try { mask.remove(); } catch (e) {} }, 1500);
+      } else {
+        btn.textContent = '知道了';
+        btn.className = 'btn';
+      }
+    }
+  };
+}
 function activate(id) {
   state.activeId = id;
   state.tabs.forEach(function (t) { t.el.classList.toggle('active', t.id === id); });
   renderTabs();
   const t = tabById(id);
   if (t && t.fit) { setTimeout(function () { try { t.fit.fit(); } catch (e) {} }, 30); }
+  // 切到某标签时自动刷新该面板（修"点设置后要再点别处才刷新"）
+  if (t && t.el && typeof t.el.refresh === "function") {
+    setTimeout(function () { try { t.el.refresh(); } catch (e) {} }, 20);
+  }
   if (t && t.onShow) t.onShow();
 }
 
@@ -687,7 +730,7 @@ async function init() {
 
 window.APP = {
   state: state, el: el, $: $, openTerminal: openTerminal, openPanel: openPanel,
-  runHealth: runHealth, refreshAllPanels: refreshAllPanels, toast: toast, modal: modal, describeErr: describeErr,
+  runHealth: runHealth, refreshAllPanels: refreshAllPanels, toast: toast, modal: modal, describeErr: describeErr, progressModal: progressModal,
   setBusy: setBusy, clearBusy: clearBusy, applyTheme: applyTheme, themeList: THEME_LIST, setDot: setDot,
   addTab: addTab, activate: activate, setDot: setDot
 };
