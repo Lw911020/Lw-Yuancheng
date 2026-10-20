@@ -28,6 +28,9 @@ function connOptions(target, host, timeoutMs) {
   };
   if (c.password) o.password = c.password;
   if (c.keyPath) {
+    if (/\.ppk$/i.test(c.keyPath)) {
+      throw new Error('这个私钥是 PuTTY 格式（.ppk），本程序只支持 OpenSSH/PEM 私钥；请改用 OpenSSH 私钥（如 c3_id_ed25519），或先用 puttygen 转成 OpenSSH 格式');
+    }
     o.privateKey = fs.readFileSync(c.keyPath);
     if (c.passphrase) o.passphrase = c.passphrase;
   }

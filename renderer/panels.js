@@ -1285,7 +1285,13 @@ box.appendChild(body);
         };
         if (t.ufi) { f('后台地址', t.ufi.base, 'ufi.base'); f('局域网后台地址', t.ufi.baseLan, 'ufi.baseLan'); f('后台令牌', t.ufi.token, 'ufi.token'); }
         if (t.adb) f('ADB 地址', t.adb.addr, 'adb.addr');
-        if (t.ssh) { f('主机', t.ssh.host, 'ssh.host'); f('端口', t.ssh.port, 'ssh.port'); f('用户', t.ssh.user, 'ssh.user'); f('私钥路径', t.ssh.keyPath, 'ssh.keyPath'); }
+        if (t.ssh) {
+          f('主机', t.ssh.host, 'ssh.host');
+          f('端口', t.ssh.port, 'ssh.port');
+          f('用户', t.ssh.user, 'ssh.user');
+          f('私钥路径（OpenSSH，不支持 .ppk）', t.ssh.keyPath, 'ssh.keyPath');
+          f('备用地址（逗号分隔，主机连不上时自动试）', t.ssh.alt || '', 'ssh.alt');
+        }
         body.appendChild(cardBox);
       });
 
