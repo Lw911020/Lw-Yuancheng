@@ -153,9 +153,9 @@ function start(target, opts, handlers) {
     ssh.withSftp(target, (sftp) => new Promise((res, rej) => {
       sftp.writeFile(remote, py, (e) => e ? rej(e) : res(true));
     })).then(() => killRemote(target)).then(() => {
-      const { Client } = require('ssh2');
-      const conn = new Client();
-      conn.on('ready', () => {
+      ssh.connectAny(target).then((conn) => {
+        conn.on('error', (e) => { stream = null; });
+        conn.on('close', () => { stream = null; });
         const pypath = (opts && opts.python) || '/usr/local/venv/bin/python3';
         const cmd = pypath + ' -u ' + remote + ' ' + fps + ' ' + wid + ' ' + q + (cam ? (' ' + streamName) : '');
         conn.exec(cmd, (err, st) => {
@@ -184,9 +184,7 @@ function start(target, opts, handlers) {
           resolve({ ok: true, command: cmd });
         });
       });
-      conn.on('error', (e) => { stream = null; reject(e); });
-      try { conn.connect(ssh.connOptions(target)); } catch (e) { reject(e); }
-    }).catch(reject);
+    }).catch((e) => { stream = null; reject(e); });
   });
 }
 
@@ -227,9 +225,9 @@ function startH264(target, opts, handlers) {
     const prep = Promise.resolve(cleanup);
     prep.then(() => {
       try { require('../log').info('cast', 'H.264 准备完成 ' + (Date.now() - T0) + 'ms' + ('（脚本内联下发）')); } catch (x) {}
-      const { Client } = require('ssh2');
-      const conn = new Client();
-      conn.on('ready', () => {
+      ssh.connectAny(target).then((conn) => {
+        conn.on('error', (e) => { h264 = null; });
+        conn.on('close', () => { h264 = null; });
         const pypath = (opts && opts.python) || '/usr/local/venv/bin/python3';
         const cmd = 'echo ' + b64 + ' | base64 -d > ' + remote + ' && chmod 700 ' + remote +
                     ' && exec ' + pypath + ' -u ' + remote + ' ' + fps + ' ' + wid + ' ' + br + ' ' + gop;
@@ -249,9 +247,7 @@ function startH264(target, opts, handlers) {
           resolve({ ok: true, command: cmd });
         });
       });
-      conn.on('error', (e) => { h264 = null; reject(e); });
-      try { conn.connect(ssh.connOptions(target)); } catch (e) { reject(e); }
-    }).catch(reject);
+    }).catch((e) => { h264 = null; reject(e); });
   });
 }
 

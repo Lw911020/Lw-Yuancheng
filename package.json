@@ -1,7 +1,7 @@
 {
   "name": "remote-console",
   "productName": "远程控制台",
-  "version": "0.8.11",
+  "version": "0.8.12",
   "description": "三端远程调试控制台 - U30 Air / C3 / 车机",
   "main": "electron/main.js",
   "scripts": {
