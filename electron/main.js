@@ -15,6 +15,7 @@ const c3touch = require('./channels/c3touch');
 const c3cast = require('./channels/c3cast');
 const c3params = require('./channels/c3params');
 const LOG = require('./log');
+const dataBundle = require('./dataBundle');
 const carcast = require('./channels/carcast');
 const ssh = require('./channels/ssh');
 const ufi = require('./channels/ufi');
@@ -353,7 +354,7 @@ async function execOnce(targetId, channel, cmd) {
 }
 
 // ---------- 脚本执行（.sh） ----------
-async function runScriptOn(targetId, channel, content) {
+async function runScriptOn(targetId, channel, content, name) {
   const c = cfg();
   const target = (c.targets || []).find((x) => x.id === targetId);
   if (!target) throw new Error('未知设备');
@@ -361,14 +362,24 @@ async function runScriptOn(targetId, channel, content) {
   if (g.action === 'blocked') throw new Error('【红线拦截】脚本命中「' + g.label + '」：' + g.reason);
 
   const b64 = Buffer.from(content, 'utf8').toString('base64');
-  const stamp = 'rc_' + Date.now().toString(36) + '.sh';
+  // 文件名带上脚本名，方便在设备上复查：/data/rc_scripts/名字_时间戳.sh
+  const safe = String(name || 'script').replace(/[^\w\u4e00-\u9fa5.\-]+/g, '_').slice(0, 40) || 'script';
+  const stamp = safe + '_' + Date.now().toString(36) + '.sh';
 
   if (channel === 'ssh') {
-    const remote = '/tmp/' + stamp;
-    const r1 = await ssh.exec(target, 'printf %s ' + JSON.stringify(b64) + ' | base64 -d > ' + remote + ' && chmod +x ' + remote, 40000);
+    // 放 /data 下（tmpfs 的 /tmp 重启就没了，且 /data 可持久复查）；
+    // 用 cd /data && sh 脚本 运行 —— 很多 openpilot 脚本依赖 cwd=/data 或相对路径
+    const dir = '/data/rc_scripts';
+    const remote = dir + '/' + stamp;
+    const r1 = await ssh.exec(target,
+      'mkdir -p ' + dir + ' && printf %s ' + JSON.stringify(b64) + ' | base64 -d > ' + remote + ' && chmod +x ' + remote, 40000);
     if (r1.code !== 0) throw new Error('上传脚本失败：' + (r1.stderr || r1.stdout));
-    const r2 = await ssh.exec(target, 'sh ' + remote, 300000);
-    return Object.assign(r2, { remote: remote });
+    const r2 = await ssh.exec(target, 'cd /data && sh ' + remote, 300000);
+    // 只留最近 20 个，别把 /data 塞满
+    try {
+      await ssh.exec(target, 'ls -t ' + dir + '/*.sh 2>/dev/null | tail -n +21 | xargs -r rm -f', 20000);
+    } catch (e) { /* 清理失败不影响脚本结果 */ }
+    return Object.assign(r2, { remote: remote, cwd: '/data' });
   }
   if (channel === 'root') {
     const cmd = 'printf %s ' + JSON.stringify(b64) + ' | base64 -d > /data/local/tmp/' + stamp + ' && chmod 755 /data/local/tmp/' + stamp + ' && sh /data/local/tmp/' + stamp;
@@ -456,7 +467,7 @@ function ipc() {
   ipcMain.handle('script:read', (e, { id }) => store.readScript(id));
   ipcMain.handle('script:save', (e, { meta, content }) => store.saveScript(meta, content));
   ipcMain.handle('script:delete', (e, { id }) => { store.deleteScript(id); return store.listScripts(); });
-  ipcMain.handle('script:run', async (e, { targetId, channel, content }) => runScriptOn(targetId, channel, content));
+  ipcMain.handle('script:run', async (e, { targetId, channel, content, name }) => runScriptOn(targetId, channel, content, name));
   ipcMain.handle('script:openDir', () => shell.openPath(store.scriptsDir()));
   ipcMain.handle('script:import', async () => {
     const r = await dialog.showOpenDialog(win, {
@@ -687,6 +698,65 @@ function ipc() {
 
   ipcMain.handle('sys:openExternal', (e, { url }) => shell.openExternal(url));
   ipcMain.handle('sys:paths', () => ({ userData: app.getPath('userData'), scriptsDir: cfg().scriptsDir, backupsDir: cfg().backupsDir }));
+  // ---------- 档 A：全部数据 导出 / 导入（换机器一键搬）----------
+  let pendingImport = null;
+
+  ipcMain.handle('data:exportAll', async () => {
+    const bundle = dataBundle.build(app.getPath('userData'), { app: app.getVersion() });
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes());
+    const r = await dialog.showSaveDialog(win, {
+      title: '导出全部数据',
+      defaultPath: '远程控制台数据-' + stamp + '.json',
+      filters: [{ name: '远程控制台数据包', extensions: ['json'] }]
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(r.filePath, JSON.stringify(bundle, null, 2), 'utf8');
+    let bytes = 0;
+    try { bytes = fs.statSync(r.filePath).size; } catch (e) {}
+    LOG.info('main', '导出数据包：' + r.filePath + '（' + bytes + ' 字节）');
+    return { ok: true, path: r.filePath, bytes: bytes, counts: bundle.counts };
+  });
+
+  ipcMain.handle('data:pickImport', async () => {
+    const r = await dialog.showOpenDialog(win, {
+      title: '选择要导入的数据包',
+      filters: [{ name: '远程控制台数据包', extensions: ['json'] }],
+      properties: ['openFile']
+    });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, canceled: true };
+    const file = r.filePaths[0];
+    let text = '';
+    try { text = fs.readFileSync(file, 'utf8'); } catch (e) { return { ok: false, message: '读不到文件：' + e.message }; }
+    const pr = dataBundle.parse(text);
+    if (!pr.ok) return pr;
+    const checks = dataBundle.checkPaths(pr.bundle, defaultConfig(app));
+    const id = 'imp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    pendingImport = { id: id, bundle: pr.bundle, path: file, at: Date.now() };
+    return {
+      ok: true, id: id, path: file, at: pendingImport.at,
+      exportedAt: pr.bundle.exportedAt || '', app: pr.bundle.app || '', dataDir: pr.bundle.dataDir || '',
+      counts: pr.bundle.counts || {}, checks: checks
+    };
+  });
+
+  ipcMain.handle('data:applyImport', async (e, o) => {
+    o = o || {};
+    if (!pendingImport || (o.id && o.id !== pendingImport.id)) return { ok: false, message: '导入会话已过期，请重新选择文件' };
+    const bundle = pendingImport.bundle;
+    pendingImport = null;
+    let res = null;
+    try {
+      res = dataBundle.apply(app.getPath('userData'), bundle, { fixPaths: !!o.fixPaths, defaults: defaultConfig(app) });
+    } catch (err) {
+      return { ok: false, message: '写入失败：' + (err && err.message ? err.message : String(err)) };
+    }
+    LOG.info('main', '导入数据包完成 | 原数据备份：' + res.backupDir + ' | 自动修正 ' + (res.fixed || []).length + ' 处路径');
+    return { ok: true, backupDir: res.backupDir, backed: res.backed, fixed: res.fixed };
+  });
+
+  ipcMain.handle('app:relaunch', () => { app.relaunch(); app.exit(0); return { ok: true }; });
   ipcMain.handle('win:minimize', () => { win.minimize(); });
   ipcMain.handle('win:maximize', () => { win.isMaximized() ? win.unmaximize() : win.maximize(); });
   ipcMain.handle('win:close', () => { win.close(); });

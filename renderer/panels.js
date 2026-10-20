@@ -264,6 +264,9 @@ window.__initPanels = function () {
     r.appendChild(btn('⌨ 打开终端', function () { A.openTerminal('c3', 'ssh', 'C3 SSH'); }));
     r.appendChild(btn('投屏（可触控）', function () { A.openPanel('c3cast', 'C3 投屏'); }));
     r.appendChild(btn('参数（364 项 · 中文说明）', function () { A.openPanel('params', 'C3 参数'); }));
+    const ignBtn = btn('🔥 模拟点火：读取中…', function () { toggleIgn(); });
+    ignBtn.title = '让 C3 以为车已点火：pandad 以 STARTED=1 启动 → ignitionLine=1 → UI 进行车页（约 5~10 秒生效）';
+    r.appendChild(ignBtn);
     r.appendChild(btn('▤ 文件管理', function () { A.openPanel('files', '文件管理', 'c3'); }));
     r.appendChild(btn('看 openpilot 服务窗口', function () {
       runInTerminal('c3', 'ssh', 'C3 服务窗口', 'tmux a -t comma', 3000);
@@ -285,6 +288,39 @@ window.__initPanels = function () {
         return ((res.stdout || '') + (res.stderr || '')).trim();
       } catch (e) { return '（读取失败：' + A.describeErr(e) + '）'; }
     }
+    // ---- 模拟点火（bench）----
+    // 设备端 /data/openpilot/.dsh/bench_control.py 认这两个标志文件，任一存在即算"点火"：
+    // pandad 以 STARTED=1 启动 → pandaStates.ignitionLine=1 → deviceState.started=1 → UI 进行车页。
+    // 标志一变它会自己重启 pandad（约 5~10 秒生效），所以这边只要写/删标志即可。
+    const IGN_FLAGS = ['/data/openpilot/.dsh/bench_ignition', '/data/bench_spoof_ignition'];
+    const IGN_CHECK = '{ [ -f ' + IGN_FLAGS[0] + ' ] || [ -f ' + IGN_FLAGS[1] + ' ]; } && echo ON || echo OFF';
+    let ignOn = null;
+    function renderIgn() {
+      if (ignOn === null) { ignBtn.textContent = '🔥 模拟点火：—'; return; }
+      ignBtn.textContent = ignOn ? '🔥 模拟点火：已开（点此关闭）' : '🔥 模拟点火：已关（点此开启）';
+      ignBtn.className = 'btn' + (ignOn ? ' primary' : '');
+    }
+    async function readIgn() {
+      const raw = await ex(IGN_CHECK, 8000);
+      ignOn = /(^|\n)\s*ON\s*(\n|$)/.test(String(raw));
+      renderIgn();
+      return ignOn;
+    }
+    async function toggleIgn() {
+      const next = !ignOn;
+      ignBtn.disabled = true;
+      const cmd = next
+        ? 'mkdir -p /data/openpilot/.dsh && printf 1 > ' + IGN_FLAGS[1] + ' && printf 1 > ' + IGN_FLAGS[0] + ' && echo OK'
+        : 'rm -f ' + IGN_FLAGS[1] + ' ' + IGN_FLAGS[0] + ' && echo OK';
+      const raw = await ex(cmd, 15000);
+      ignBtn.disabled = false;
+      if (!/(^|\n)OK\s*$/.test(String(raw))) { A.toast('模拟点火切换失败：' + String(raw).slice(0, 140)); await readIgn(); return; }
+      ignOn = next;
+      renderIgn();
+      A.toast(next ? '模拟点火已开 —— 约 5~10 秒后 C3 会进行车页' : '模拟点火已关 —— C3 会回到待机页');
+      load();
+    }
+
     // ---- 把英文的原始输出翻成人话 ----
     function cnDur(u) {
       let s = String(u).trim(), days = 0;
@@ -334,7 +370,8 @@ window.__initPanels = function () {
       'echo "@@DISK"; df -h /data 2>/dev/null | tail -1; echo',
       'echo "@@TMUX"; tmux ls 2>&1 | head -5; echo',
       'echo "@@WIN"; tmux list-windows -t comma 2>/dev/null | head -2; echo',
-      'echo "@@TEMP"; cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null; echo'
+      'echo "@@TEMP"; cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null; echo',
+      'echo "@@IGN"; { [ -f /data/openpilot/.dsh/bench_ignition ] || [ -f /data/bench_spoof_ignition ]; } && printf "FLAG=ON " || printf "FLAG=OFF "; P=$(pgrep -f "[.]/pandad" | head -1); if [ -n "$P" ] && grep -zq "STARTED=1" /proc/$P/environ 2>/dev/null; then echo "STARTED=1"; else echo "STARTED=0"; fi'
     ].join('\n');
 
     function pick(raw, tag) {
@@ -355,6 +392,10 @@ window.__initPanels = function () {
       const tmux = pick(RAW, 'TMUX');
       const win = pick(RAW, 'WIN');
       const temp = pick(RAW, 'TEMP');
+      const ignRaw = pick(RAW, 'IGN');
+      const flagOn = /FLAG=ON/.test(ignRaw);
+      const startedOn = /STARTED=1/.test(ignRaw);
+      ignOn = flagOn; renderIgn();
 
       // build.json 里才是真正的"定制版本名"
       let bj = null;
@@ -381,6 +422,10 @@ window.__initPanels = function () {
         'openpilot 的后台服务跑在这个 tmux 会话里（当前窗口：' + (String(win).split('\n')[0] || '未知') + '）。'
         + '它跟"终端"不是一回事：终端是你自己开的独立 shell，想看服务日志要 tmux a 进去'));
       cards.appendChild(card('SoC 温度', temp ? c.toFixed(1) + ' ℃' : '未知', c > 85 ? '偏高，注意散热' : '正常'));
+      cards.appendChild(card('模拟点火（bench）',
+        flagOn ? (startedOn ? '已开 · 已生效' : '已开 · 等 pandad 重启') : '已关',
+        '标志 ' + (flagOn ? 'ON' : 'OFF') + ' · pandad STARTED=' + (startedOn ? '1' : '0')
+        + '　开：pandad 以 STARTED=1 起 → ignitionLine=1 → UI 进行车页；改完约 5~10 秒生效'));
       o.textContent = '原始输出：\n' + [branch, commit, up, disk, tmux, win].join('\n');
     }
     load();
@@ -1000,7 +1045,8 @@ window.__initPanels = function () {
       if (tab && tab.term) tab.term.write('\x1b[36m$ 运行脚本 ' + rec.file + ' …\x1b[0m\r\n');
       A.setBusy('正在运行脚本 ' + rec.name + ' …');
       try {
-        const res = await rc.scriptRun(targetId, channel, full.content);
+        const res = await rc.scriptRun(targetId, channel, full.content, rec.name);
+        if (res && res.remote && tab && tab.term) tab.term.write('\x1b[90m[已放到 ' + res.remote + '，工作目录 ' + (res.cwd || '/data') + ']\x1b[0m\r\n');
         const text = (res.stdout || '') + (res.stderr || '');
         if (tab && tab.term) tab.term.write(text.replace(/\r?\n/g, '\r\n') + '\r\n\x1b[90m[脚本结束，退出码 ' + res.code + ']\x1b[0m\r\n');
       } catch (e) {
@@ -1244,6 +1290,70 @@ box.appendChild(body);
       });
 
       const r2 = row();
+      // ---- 数据搬运（档 A：换机器一键搬）----
+      const ddata = el('div', 'field');
+      ddata.appendChild(el('label', null, '数据搬运（导出 / 导入）'));
+      const drow = row();
+      drow.appendChild(btn('⬆ 导出全部数据…', async function () {
+        try {
+          const r = await rc.dataExportAll();
+          if (!r || !r.ok) { if (r && r.message) A.toast('导出失败：' + r.message); return; }
+          const c = r.counts || {};
+          const d = el('div');
+          d.appendChild(el('div', null, '文件：' + r.path));
+          d.appendChild(el('div', null, '大小：' + (r.bytes > 1024 ? (r.bytes / 1024).toFixed(1) + ' KB' : r.bytes + ' 字节')));
+          d.appendChild(el('div', null, '内容：设备 ' + (c.targets || 0) + ' 个 · 命令 ' + (c.commands || 0) + ' 条 · 脚本 ' + (c.scripts || 0) + ' 个 · 参数快照 ' + (c.snapshots || 0) + ' 份'));
+          d.appendChild(el('div', 'desc', '把这个文件拷到另一台电脑，用「导入数据…」即可。'));
+          A.modal('导出完成', d, async function () {}, '好');
+        } catch (e) { A.toast('导出失败：' + A.describeErr(e)); }
+      }, 'primary'));
+      drow.appendChild(btn('⬇ 导入数据…', async function () {
+        try {
+          const p = await rc.dataPickImport();
+          if (!p || !p.ok) { if (p && p.message) A.toast('导入失败：' + p.message); return; }
+          let fixPaths = true;
+          const c = p.counts || {};
+          const d = el('div');
+          d.appendChild(el('div', null, '导出机器：' + (p.dataDir || '?') + (p.app ? '（本程序 v' + p.app + '）' : '')));
+          d.appendChild(el('div', null, '导出时间：' + (p.exportedAt ? String(p.exportedAt).replace('T', ' ').slice(0, 19) : '?')));
+          d.appendChild(el('div', null, '内容：设备 ' + (c.targets || 0) + ' 个 · 命令 ' + (c.commands || 0) + ' 条 · 脚本 ' + (c.scripts || 0) + ' 个 · 参数快照 ' + (c.snapshots || 0) + ' 份'));
+          const bad = (p.checks || []).filter(function (x) { return !x.exists; });
+          if (bad.length) {
+            d.appendChild(el('h2', null, '本机不存在的路径（' + bad.length + ' 处）'));
+            bad.forEach(function (x) {
+              d.appendChild(el('div', 'desc', '· ' + x.label + '：' + x.value + (x.fallback ? '　→　改成 ' + x.fallback : '　（需自己补）')));
+            });
+            const w = el('label', 'badge');
+            w.style.cssText = 'display:flex;gap:6px;align-items:center;padding:6px 10px;margin-top:8px';
+            const cb = el('input'); cb.type = 'checkbox'; cb.checked = true;
+            cb.onchange = function () { fixPaths = cb.checked; };
+            w.appendChild(cb);
+            w.appendChild(document.createTextNode('有默认值的路径自动改成本机默认'));
+            d.appendChild(w);
+          }
+          d.appendChild(el('div', 'desc', '导入会覆盖当前的设置、命令库、脚本与参数快照；原数据会先备份到数据目录下的 backups/pre-import-<时间>。导入后需要重启程序。'));
+          A.modal('确认导入', d, async function () {
+            const r = await rc.dataApplyImport({ id: p.id, fixPaths: fixPaths });
+            if (!r || !r.ok) { A.toast('导入失败：' + ((r && r.message) || '未知错误')); return; }
+            const d2 = el('div');
+            d2.appendChild(el('div', null, '已导入。原数据备份在：'));
+            d2.appendChild(el('div', 'desc', r.backupDir));
+            if ((r.fixed || []).length) {
+              d2.appendChild(el('h2', null, '已自动修正路径（' + r.fixed.length + ' 处）'));
+              (r.fixed || []).forEach(function (x) { d2.appendChild(el('div', 'desc', '· ' + x)); });
+            }
+            d2.appendChild(el('div', 'desc', '点下面按钮重启程序，让新配置生效。'));
+            A.modal('导入完成', d2, async function () { await rc.appRelaunch(); }, '立即重启');
+          }, '确认导入');
+        } catch (e) { A.toast('导入失败：' + A.describeErr(e)); }
+      }));
+      drow.appendChild(btn('▤ 打开数据目录', function () {
+        rc.paths().then(function (pp) { rc.openExternal('file:///' + String(pp.userData).replace(/\\/g, '/')); });
+      }));
+      ddata.appendChild(drow);
+      ddata.appendChild(el('div', 'desc', '包含：设置与设备连接、命令库、脚本正文、参数快照。不含日志与备份。导入前会自动把现有数据备份到 backups/pre-import-<时间>。'));
+      body.appendChild(ddata);
+
       r2.appendChild(btn('打开数据目录', function () { rc.paths().then(function (p) { rc.openExternal('file:///' + p.scriptsDir.replace(/\\\\/g, '/')); }); }));
       body.appendChild(r2);
     }
