@@ -31,3 +31,5 @@ id_rsa*
 npm-debug.log*
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc

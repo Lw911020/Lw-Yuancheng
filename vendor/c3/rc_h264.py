@@ -64,8 +64,28 @@ ff_in = None
 out = sys.stdout.buffer
 os.makedirs('/dev/shm', exist_ok=True)
 
+_restarts = []
+
 def start_ff(w, h):
     global ff, ff_in
+    # 先回收上一个 ffmpeg（否则每死一次就留一个僵尸）
+    if ff is not None:
+        try:
+            if ff.poll() is None:
+                ff.kill()
+            ff.wait(timeout=3)
+        except Exception:
+            pass
+        ff = None
+        ff_in = None
+    # 重启限流：10 秒内超过 3 次就退出，避免 ffmpeg 反复死导致空转烧 CPU
+    _now = time.time()
+    while _restarts and _now - _restarts[0] > 10.0:
+        _restarts.pop(0)
+    if len(_restarts) >= 3:
+        log('ffmpeg 10 秒内连续失败 3 次，退出（避免空转）')
+        sys.exit(4)
+    _restarts.append(_now)
     ff = subprocess.Popen(ffmpeg_cmd(w, h), stdin=subprocess.PIPE, stdout=out, stderr=sys.stderr)
     ff_in = ff.stdin
     log('ffmpeg 启动: %dx%d @%gfps %s gop=%d' % (w, h, FPS, BITRATE, GOP))
