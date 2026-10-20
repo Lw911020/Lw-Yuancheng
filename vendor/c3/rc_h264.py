@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
-# rc_h264.py - 从 /dev/shm/ui.rgb 取帧，用 ffmpeg(libx264) 编成 fragmented MP4 写到 stdout
+# rc_h264.py v3 —— 只用标准库：从 /dev/shm/ui.rgb 读原始 RGB 帧，直接喂 ffmpeg(libx264)
+# 由 ffmpeg 自己完成 rgb24 -> yuv420p（实测 C3 上 1024x512 约 19 fps），
+# 这样不依赖 cv2/numpy，刷机后不会因为环境缺失而挂。
 # 用法: rc_h264.py [fps] [width] [bitrate] [gop]
-#   例: rc_h264.py 20 1024 800k 30
 import os, sys, time, struct, subprocess
-import numpy as np, cv2
+try:
+    import signal as _sig
+except Exception:
+    _sig = None
 
 UIRGB = os.environ.get('RC_UI_RGB', '/dev/shm/ui.rgb')
+SHM_FLAG = '/dev/shm/ui.cast.on'
 FPS = float(sys.argv[1]) if len(sys.argv) > 1 else 20.0
 WID = int(sys.argv[2]) if len(sys.argv) > 2 else 1024
 BITRATE = sys.argv[3] if len(sys.argv) > 3 else '800k'
-GOP = int(sys.argv[4]) if len(sys.argv) > 4 else 30
+GOP = int(sys.argv[4]) if len(sys.argv) > 4 else 20
 
 def log(*a):
     print(*a, file=sys.stderr); sys.stderr.flush()
 
-# 自己打开投屏开关，省掉程序侧一次 SSH 往返
+# 自己打开投屏开关
 try:
-    _f = os.open('/dev/shm/ui.cast.on', os.O_CREAT | os.O_WRONLY, 0o666)
+    _f = os.open(SHM_FLAG, os.O_CREAT | os.O_WRONLY, 0o666)
     os.close(_f)
-except Exception as _e:
-    log('打开开关失败: %s' % _e)
+except Exception as e:
+    log('打开开关失败: %s' % e)
 
-# 清掉上一轮残留的同类进程（只认 python3，绝不碰 sshd 起的那层 shell，
-# 否则会把整个 exec 会话带走、流刚起就断）
+# 清掉上一轮残留的同类进程（只认 python3，绝不碰 sshd 那层 shell）
 try:
     _me = os.getpid()
     _ps = subprocess.run(['ps', '-eo', 'pid,args'], capture_output=True, text=True).stdout
@@ -47,28 +51,13 @@ try:
 except Exception:
     pass
 
-def ffmpeg_cmd(w, h):
-    return ['ffmpeg', '-hide_banner', '-loglevel', 'error',
-            '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', '%dx%d' % (w, h),
-            '-r', ('%g' % FPS), '-i', 'pipe:0',
-            '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-            '-profile:v', 'baseline', '-level', '3.1',
-            '-b:v', BITRATE, '-maxrate', BITRATE, '-bufsize', '1M',
-            '-g', str(GOP), '-frag_duration', '100000', '-flush_packets', '1',
-            '-bsf:v', 'h264_metadata=aud=insert',
-            '-f', 'h264', 'pipe:1']
-
-
 ff = None
 ff_in = None
 out = sys.stdout.buffer
-os.makedirs('/dev/shm', exist_ok=True)
-
 _restarts = []
 
 def start_ff(w, h):
     global ff, ff_in
-    # 先回收上一个 ffmpeg（否则每死一次就留一个僵尸）
     if ff is not None:
         try:
             if ff.poll() is None:
@@ -78,7 +67,6 @@ def start_ff(w, h):
             pass
         ff = None
         ff_in = None
-    # 重启限流：10 秒内超过 3 次就退出，避免 ffmpeg 反复死导致空转烧 CPU
     _now = time.time()
     while _restarts and _now - _restarts[0] > 10.0:
         _restarts.pop(0)
@@ -86,12 +74,48 @@ def start_ff(w, h):
         log('ffmpeg 10 秒内连续失败 3 次，退出（避免空转）')
         sys.exit(4)
     _restarts.append(_now)
-    ff = subprocess.Popen(ffmpeg_cmd(w, h), stdin=subprocess.PIPE, stdout=out, stderr=sys.stderr)
+    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+           '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', '%dx%d' % (w, h),
+           '-r', ('%g' % FPS), '-i', 'pipe:0']
+    if WID != w:
+        cmd += ['-vf', 'scale=%d:trunc(ow/a/2)*2,format=yuv420p' % WID]
+    else:
+        cmd += ['-vf', 'format=yuv420p']
+    cmd += ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+            '-profile:v', 'baseline', '-level', '3.1',
+            '-b:v', BITRATE, '-maxrate', BITRATE, '-bufsize', '1M',
+            '-g', str(GOP), '-flush_packets', '1',
+            '-bsf:v', 'h264_metadata=aud=insert',
+            '-f', 'h264', 'pipe:1']
+    ff = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=out, stderr=sys.stderr)
     ff_in = ff.stdin
-    log('ffmpeg 启动: %dx%d @%gfps %s gop=%d' % (w, h, FPS, BITRATE, GOP))
+    log('ffmpeg 启动: %dx%d -> %dpx @%gfps %s gop=%d' % (w, h, WID, FPS, BITRATE, GOP))
+
+fd_ = -1
+last = -1
+n = 0
+t0 = time.time()
+
+def _cleanup(*_a):
+    try:
+        if ff is not None:
+            if ff.poll() is None:
+                ff.kill()
+            ff.wait(timeout=3)
+    except Exception:
+        pass
+    sys.exit(0)
+
+import atexit
+atexit.register(_cleanup)
+for _s in ('SIGTERM', 'SIGINT', 'SIGHUP'):
+    try:
+        _sig.signal(getattr(_sig, _s), _cleanup)
+    except Exception:
+        pass
 
 def read_frame():
-    """返回 (rgb_hwc_array, w, h) 或 None；内部自己管 fd"""
+    """返回 (raw_rgb_bytes, w, h, seq)；读到撕裂/不完整就返回 None"""
     global fd_
     try:
         if fd_ < 0:
@@ -100,57 +124,37 @@ def read_frame():
         if len(head) < 16:
             return None
         magic, w, h, seq = struct.unpack('<IIII', head)
-        if magic != 0x55494831 or w <= 0 or h <= 0:
+        if magic != 0x55494831 or w <= 0 or h <= 0 or w > 4096 or h > 4096:
             return None
-        body = os.pread(fd_, w*h*3, 16)
-        if len(body) < w*h*3 or os.pread(fd_, 16, 0) != head:
+        need = w * h * 3
+        body = os.pread(fd_, need, 16)
+        if len(body) < need:
             return None
-        return np.frombuffer(body, np.uint8).reshape((h, w, 3)), w, h, seq
+        if os.pread(fd_, 16, 0) != head:   # 读到一半被覆盖 -> 撕裂，丢弃
+            return None
+        return body, w, h, seq
     except Exception:
-        try: os.close(fd_)
-        except Exception: pass
+        try:
+            os.close(fd_)
+        except Exception:
+            pass
         fd_ = -1
         return None
 
-fd_ = -1
-last = -1
-n = 0
-t0 = time.time()
-def _cleanup(*_a):
-    try:
-        if ff is not None:
-            if ff.poll() is None: ff.kill()
-            ff.wait(timeout=3)
-    except Exception:
-        pass
-    sys.exit(0)
-import atexit, signal as _sig
-atexit.register(_cleanup)
-for _s in ('SIGTERM', 'SIGINT', 'SIGHUP'):
-    try: _sig.signal(getattr(_sig, _s), _cleanup)
-    except Exception: pass
 log('READY')
-
 while True:
     t_frame = time.time()
     f = read_frame()
     if f is None:
         time.sleep(0.005); continue
-    rgb, w, h, seq = f
+    body, w, h, seq = f
     if seq == last:
         time.sleep(0.003); continue
     last = seq
-    oh = max(2, (int(round(h * WID / float(w) / 2)) * 2))
-    ow = WID if (WID != w) else w
-    if ow != w:
-        rgb = cv2.resize(rgb, (ow, oh), interpolation=cv2.INTER_AREA)
-    else:
-        oh = h
-    yuv = cv2.cvtColor(rgb, cv2.COLOR_RGB2YUV_I420)
     if ff is None or ff.poll() is not None:
-        start_ff(ow, oh)
+        start_ff(w, h)
     try:
-        ff_in.write(yuv.tobytes())
+        ff_in.write(body)
     except Exception as e:
         log('写 ffmpeg 失败: %s' % e)
         break
