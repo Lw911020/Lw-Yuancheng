@@ -3,9 +3,11 @@
 // 多地址回退：C3 会在「家里网 192.168.31.x」和「U30 热点 192.168.0.x」之间来回切，
 // 所以 target.ssh.host 连不上时依次试 target.ssh.alt（逗号分隔），并记住上次成功的地址优先用。
 const fs = require('fs');
+const path = require('path');
 const { Client } = require('ssh2');
 
 const lastGood = {};        // targetId -> host（上次握手成功的地址）
+const lastGoodKey = {};     // targetId -> keyPath（上次认证成功的私钥）
 
 function hostList(target) {
   const c = (target && target.ssh) || {};
@@ -14,6 +16,32 @@ function hostList(target) {
   push(lastGood[target.id]);
   push(c.host);
   String(c.alt || '').split(',').forEach(push);
+  return out;
+}
+
+// 设备被刷机后 authorized_keys 会变，但 c3-keys 目录里通常还留着旧钥匙/备份，
+// 这里把「配置的主钥匙 + 同目录下同名前缀的其它私钥」都作为候选，认证失败时自动换一把。
+function keyCandidates(target) {
+  const c = (target && target.ssh) || {};
+  const out = [];
+  const add = (p) => {
+    if (!p) return;
+    if (/\.ppk$/i.test(p)) return;            // PuTTY 格式用不了，跳过
+    if (out.indexOf(p) >= 0) return;
+    out.push(p);
+  };
+  if (lastGoodKey[target.id]) add(lastGoodKey[target.id]);
+  if (c.keyPath) {
+    add(c.keyPath);
+    try {
+      const dir = path.dirname(c.keyPath);
+      const base = path.basename(c.keyPath);
+      for (const f of fs.readdirSync(dir)) {
+        if (f === base) continue;
+        if (f.indexOf(base) === 0) add(path.join(dir, f));
+      }
+    } catch (e) { /* 目录读不到就用主钥匙 */ }
+  }
   return out;
 }
 
@@ -27,40 +55,51 @@ function connOptions(target, host, timeoutMs) {
     keepaliveInterval: 15000
   };
   if (c.password) o.password = c.password;
-  if (c.keyPath) {
-    if (/\.ppk$/i.test(c.keyPath)) {
+  const kp = arguments.length > 3 && arguments[3] ? arguments[3] : c.keyPath;
+  if (kp) {
+    if (/\.ppk$/i.test(kp)) {
       throw new Error('这个私钥是 PuTTY 格式（.ppk），本程序只支持 OpenSSH/PEM 私钥；请改用 OpenSSH 私钥（如 c3_id_ed25519），或先用 puttygen 转成 OpenSSH 格式');
     }
-    o.privateKey = fs.readFileSync(c.keyPath);
+    o.privateKey = fs.readFileSync(kp);
     if (c.passphrase) o.passphrase = c.passphrase;
   }
   return o;
 }
 
-// 依次尝试各地址，返回已 ready 的 Client
+// 依次尝试「地址 × 钥匙」组合，返回已 ready 的 Client
 function connectAny(target, timeoutMs) {
   const hosts = hostList(target);
+  const keys = keyCandidates(target);
   const per = timeoutMs || Math.min(((target && target.ssh && target.ssh.readyTimeout) || 20000), 8000);
+  const combos = [];
+  for (const h of hosts) {
+    if (!keys.length) combos.push({ host: h, key: null });
+    else for (const k of keys) combos.push({ host: h, key: k });
+  }
   return new Promise((resolve, reject) => {
     let i = 0;
     let lastErr = null;
     const next = () => {
-      if (i >= hosts.length) {
-        reject(new Error('SSH 连不上（试过 ' + hosts.join(' / ') + '）' + (lastErr ? '：' + lastErr.message : '')));
+      if (i >= combos.length) {
+        const tried = combos.map((c) => c.host + (c.key ? ' (' + path.basename(c.key) + ')' : '')).join(' / ');
+        reject(new Error('SSH 连不上（试过 ' + tried + '）' + (lastErr ? '：' + lastErr.message : '')));
         return;
       }
-      const host = hosts[i++];
+      const combo = combos[i++];
       const conn = new Client();
       let settled = false;
       const finish = (ok, err) => {
         if (settled) return;
         settled = true;
-        if (ok) { lastGood[target.id] = host; resolve(conn); }
-        else { lastErr = err; try { conn.end(); } catch (e) {} next(); }
+        if (ok) {
+          lastGood[target.id] = combo.host;
+          if (combo.key) lastGoodKey[target.id] = combo.key;
+          resolve(conn);
+        } else { lastErr = err; try { conn.end(); } catch (e) {} next(); }
       };
       conn.on('ready', () => finish(true));
       conn.on('error', (e) => finish(false, e));
-      try { conn.connect(connOptions(target, host, per)); } catch (e) { finish(false, e); }
+      try { conn.connect(connOptions(target, combo.host, per, combo.key)); } catch (e) { finish(false, e); }
     };
     next();
   });
@@ -135,4 +174,4 @@ function withSftp(target, fn) {
   }));
 }
 
-module.exports = { openSshSession, exec, test, withSftp, connOptions, connectAny, hostList, lastGood };
+module.exports = { openSshSession, exec, test, withSftp, connOptions, connectAny, hostList, keyCandidates, lastGood, lastGoodKey };
